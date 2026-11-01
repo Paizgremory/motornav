@@ -145,7 +145,7 @@ class MainActivity : Activity(), Core.Listener {
             try {
                 val p = resolveShared(txt)
                 if (p == null) {
-                    runOnUiThread { Toast.makeText(this, "Tujuan tidak ditemukan. Isi Google API key supaya pencarian nama bisa jalan. Tautan akhir: ${lastLinkInfo.take(120)}", Toast.LENGTH_LONG).show() }
+                    runOnUiThread { Toast.makeText(this, if (lastErr.isNotEmpty()) lastErr.take(220) else "Tujuan tidak ditemukan di Google maupun OSM. Tautan akhir: ${lastLinkInfo.take(100)}", Toast.LENGTH_LONG).show() }
                     return@execute
                 }
                 var waited = 0
@@ -159,6 +159,7 @@ class MainActivity : Activity(), Core.Listener {
     }
 
     private fun resolveShared(txt: String): Place? {
+        lastErr = ""
         val url = Regex("https?://\\S+").find(txt)?.value
         val nameLines = txt.lineSequence().map { it.trim() }.filter { it.isNotEmpty() && !it.startsWith("http") }.toList()
         var p: Place? = null
@@ -171,17 +172,32 @@ class MainActivity : Activity(), Core.Listener {
             val nm = nameLines.firstOrNull()
             return if (nm != null && p.name.startsWith("Titik")) Place(nm, p.lat, p.lon) else p
         }
-        // Tautan tanpa koordinat: cari lewat nama + alamat, lalu nama saja
+        // Tautan tanpa koordinat: cari lewat nama. Sumber nama: alamat akhir tautan (/maps/place/NAMA,+ALAMAT/), lalu teks yang dibagikan.
+        val tries = ArrayList<String>()
+        Regex("/maps/place/([^/@?]+)").find(lastLinkInfo)?.groupValues?.get(1)?.let {
+            val d = try { java.net.URLDecoder.decode(it, "UTF-8") } catch (e: Exception) { it.replace('+', ' ') }
+            if (d.isNotBlank()) {
+                tries.add(d)
+                tries.add(d.split(",").first().trim())
+            }
+        }
         if (nameLines.isNotEmpty()) {
-            val tries = listOf(nameLines.joinToString(" "), nameLines.first()).distinct()
-            for (q in tries) {
-                val l = try { Engine.search(applicationContext, q, Core.lat, Core.lon) } catch (e: Exception) { emptyList() }
+            tries.add(nameLines.joinToString(" "))
+            tries.add(nameLines.first())
+        }
+        for (q in tries.distinct()) {
+            try {
+                val l = Engine.search(applicationContext, q, Core.lat, Core.lon)
                 if (l.isNotEmpty()) return l.first()
+            } catch (e: Exception) {
+                lastErr = e.message ?: "galat"
+                break   // galat dari Google (key/API) akan sama untuk semua percobaan
             }
         }
         return null
     }
 
+    private var lastErr = ""
     private var lastLinkInfo = ""
 
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {

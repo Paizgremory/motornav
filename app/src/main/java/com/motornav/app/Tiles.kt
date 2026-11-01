@@ -62,6 +62,7 @@ class Tiles(ctx: Context, private val onLoaded: () -> Unit) {
 
     private fun googleFailed(e: Exception) {
         val m = e.message ?: ""
+        if (!m.contains("HTTP 4")) Engine.mapNote = "Peta: gagal ($m)"
         // Hanya galat dari Google (key salah, API belum aktif, kuota): pakai OSM sementara.
         if (m.contains("HTTP 4")) {
             synchronized(gLock) { gSession = "" }
