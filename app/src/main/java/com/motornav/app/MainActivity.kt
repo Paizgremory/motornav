@@ -75,6 +75,16 @@ class MainActivity : Activity(), Core.Listener {
             Toast.makeText(this, if (etKey.text.isBlank()) "Key dihapus: pakai OSRM." else "Key disimpan: pakai Google.", Toast.LENGTH_SHORT).show()
         }))
 
+        root.addView(CheckBox(this).apply {
+            text = "Suara petunjuk belokan"
+            isChecked = Voice.enabled
+            setOnCheckedChangeListener { _, on -> Voice.setEnabled(on) }
+        })
+        root.addView(row(button("Tes suara") {
+            if (!Voice.langOk) Toast.makeText(this, "Suara bahasa Indonesia belum ada. Pasang di Pengaturan > Teks ke ucapan.", Toast.LENGTH_LONG).show()
+            Voice.speak("Dalam 200 meter, belok kiri ke Jalan Ahmad Yani.")
+        }))
+
         etSearch = EditText(this).apply {
             hint = "Cari tujuan, 'lat,lon', atau tempel link Maps"
             inputType = InputType.TYPE_CLASS_TEXT
@@ -103,12 +113,71 @@ class MainActivity : Activity(), Core.Listener {
             tvStatus.text = "Layanan dimatikan."
         }))
         root.addView(TextView(this).apply {
-            text = "Peta © OpenStreetMap contributors © CARTO. Rute & pencarian: Google (jika API key diisi), cadangan OSRM/Nominatim."
+            text = "Peta, rute & pencarian: Google (jika API key diisi). Cadangan: © OpenStreetMap contributors, OSRM, Nominatim."
             textSize = 11f
             setPadding(0, dp(14), 0, 0)
         })
 
         setContentView(ScrollView(this).apply { addView(root) })
+        handleIntent(intent)
+    }
+
+    // ---------- terima "Bagikan" dari Google Maps ----------
+    private var pendingShare: String? = null
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        handleIntent(intent)
+    }
+
+    private fun handleIntent(i: Intent?) {
+        if (i == null || i.action != Intent.ACTION_SEND) return
+        val txt = i.getStringExtra(Intent.EXTRA_TEXT) ?: return
+        setIntent(Intent())   // jangan diproses ulang saat activity dibuat ulang
+        processShare(txt)
+    }
+
+    private fun processShare(txt: String) {
+        if (!startIfNeeded()) { pendingShare = txt; return }
+        Toast.makeText(this, "Menerima tujuan dari Maps...", Toast.LENGTH_SHORT).show()
+        exec.execute {
+            try {
+                val p = resolveShared(txt)
+                if (p == null) {
+                    runOnUiThread { Toast.makeText(this, "Tujuan tidak ditemukan di data yang dibagikan.", Toast.LENGTH_LONG).show() }
+                    return@execute
+                }
+                var waited = 0
+                while (Core.lat.isNaN() && waited < 15000) { Thread.sleep(500); waited += 500 }
+                runOnUiThread { etSearch.setText(p.name) }
+                Core.setDestination(p)
+            } catch (e: Exception) {
+                runOnUiThread { Toast.makeText(this, "Gagal baca tujuan: ${e.message}", Toast.LENGTH_LONG).show() }
+            }
+        }
+    }
+
+    private fun resolveShared(txt: String): Place? {
+        val url = Regex("https?://\\S+").find(txt)?.value
+        val nameLines = txt.lineSequence().map { it.trim() }.filter { it.isNotEmpty() && !it.startsWith("http") }.toList()
+        var p: Place? = null
+        if (url != null) {
+            p = try { Geocode.search(url).firstOrNull() } catch (e: Exception) { null }
+        } else p = Geocode.parseCoord(txt)
+        if (p != null) {
+            val nm = nameLines.firstOrNull()
+            return if (nm != null && p.name.startsWith("Titik")) Place(nm, p.lat, p.lon) else p
+        }
+        if (nameLines.isNotEmpty())   // tautan tanpa koordinat: cari lewat nama + alamat
+            return Engine.search(applicationContext, nameLines.joinToString(" "), Core.lat, Core.lon).firstOrNull()
+        return null
+    }
+
+    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        val s = pendingShare ?: return
+        if (missing().isEmpty()) { pendingShare = null; processShare(s) }
     }
 
     override fun onResume() {

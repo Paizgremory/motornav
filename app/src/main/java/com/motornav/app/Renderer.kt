@@ -46,10 +46,12 @@ class Renderer(private val tiles: Tiles) {
     private val path = Path()
     private val rect = RectF()
 
-    private val cBg = Color.rgb(12, 28, 64)
-    private val cBanner = Color.rgb(26, 102, 176)
-    private val cBanner2 = Color.rgb(15, 70, 130)
-    private val cChip = Color.rgb(10, 20, 46)
+    private val cBg = Color.rgb(36, 47, 62)
+    private val cBanner = Color.rgb(11, 128, 67)
+    private val cBanner2 = Color.rgb(7, 90, 46)
+    private val cChip = Color.rgb(32, 33, 36)
+    private val cGreen = Color.rgb(129, 201, 149)
+    private val plainPaint = Paint(Paint.FILTER_BITMAP_FLAG)
     private val timeFmt = SimpleDateFormat("HH:mm", Locale.US)
 
     @Synchronized
@@ -62,6 +64,7 @@ class Renderer(private val tiles: Tiles) {
         val cy = 165f
         val rot = if (s.headingUp) s.heading else 0f
 
+        val tpaint = if (tiles.googleActive()) plainPaint else tilePaint
         cv.save()
         cv.translate(cx, cy)
         cv.rotate(-rot)
@@ -75,28 +78,44 @@ class Renderer(private val tiles: Tiles) {
             val l = (tx * 256.0 - px).toFloat()
             val tt = (ty * 256.0 - py).toFloat()
             rect.set(l, tt, l + 256.6f, tt + 256.6f)
-            cv.drawBitmap(t, null, rect, tilePaint)
+            cv.drawBitmap(t, null, rect, tpaint)
         }
         drawRoute(s, px, py)
         cv.restore()
 
-        // posisi saya: kerucut arah + titik
-        cv.save()
-        cv.translate(cx, cy)
-        cv.rotate(if (s.headingUp) 0f else s.heading)
-        p.style = Paint.Style.FILL
-        p.color = Color.argb(90, 60, 130, 255)
-        path.reset()
-        path.moveTo(0f, 0f); path.lineTo(-24f, -42f); path.lineTo(24f, -42f); path.close()
-        cv.drawPath(path, p)
-        cv.restore()
-        p.color = Color.WHITE
-        cv.drawCircle(cx, cy, 11f, p)
-        p.color = Color.rgb(66, 133, 244)
-        cv.drawCircle(cx, cy, 8f, p)
+        // posisi saya: panah navigasi biru (saat ada rute) atau titik + kerucut arah
+        if (s.route != null) {
+            cv.save()
+            cv.translate(cx, cy)
+            cv.rotate(if (s.headingUp) 0f else s.heading)
+            path.reset()
+            path.moveTo(0f, -17f); path.lineTo(12f, 13f); path.lineTo(0f, 6f); path.lineTo(-12f, 13f); path.close()
+            p.style = Paint.Style.STROKE; p.strokeWidth = 5f; p.strokeJoin = Paint.Join.ROUND
+            p.color = Color.WHITE
+            cv.drawPath(path, p)
+            p.style = Paint.Style.FILL
+            p.color = Color.rgb(66, 133, 244)
+            cv.drawPath(path, p)
+            cv.restore()
+        } else {
+            cv.save()
+            cv.translate(cx, cy)
+            cv.rotate(if (s.headingUp) 0f else s.heading)
+            p.style = Paint.Style.FILL
+            p.color = Color.argb(90, 60, 130, 255)
+            path.reset()
+            path.moveTo(0f, 0f); path.lineTo(-24f, -42f); path.lineTo(24f, -42f); path.close()
+            cv.drawPath(path, p)
+            cv.restore()
+            p.color = Color.WHITE
+            cv.drawCircle(cx, cy, 11f, p)
+            p.color = Color.rgb(66, 133, 244)
+            cv.drawCircle(cx, cy, 8f, p)
+        }
 
         drawBanner(s)
         drawBottom(s)
+        if (tiles.googleActive()) text("Google", 120f, 233f, 8f, Color.rgb(170, 175, 185), Paint.Align.CENTER)
         return bmp
     }
 
@@ -118,9 +137,9 @@ class Renderer(private val tiles: Tiles) {
         p.style = Paint.Style.STROKE
         p.strokeCap = Paint.Cap.ROUND
         p.strokeJoin = Paint.Join.ROUND
-        p.color = Color.rgb(20, 90, 200); p.strokeWidth = 13f
+        p.color = Color.rgb(10, 45, 120); p.strokeWidth = 15f
         cv.drawPath(path, p)
-        p.color = Color.rgb(100, 185, 255); p.strokeWidth = 8f
+        p.color = Color.rgb(91, 153, 255); p.strokeWidth = 10f
         cv.drawPath(path, p)
         p.style = Paint.Style.FILL
         if (last == n - 1) {                       // titik tujuan
@@ -198,15 +217,19 @@ class Renderer(private val tiles: Tiles) {
 
         // chip bawah: jam tiba + sisa jarak (atau jam sekarang bila tanpa rute)
         val now = System.currentTimeMillis()
-        val label = if (s.route != null && s.mode != 3) {
-            "Tiba ${timeFmt.format(Date(now + (s.remSec * 1000).toLong()))} · ${fmtDist(s.remDist)}"
-        } else timeFmt.format(Date(now))
-        tp.textSize = 13f
-        val w = tp.measureText(label) + 20f
+        val hasRoute = s.route != null && s.mode != 3
+        val a = timeFmt.format(Date(now + (if (hasRoute) (s.remSec * 1000).toLong() else 0L)))
+        val b = if (hasRoute) "  ·  ${fmtDist(s.remDist)}" else ""
+        tp.textSize = 14f
+        val wa = tp.measureText(a)
+        val wb = tp.measureText(b)
+        val w = wa + wb + 20f
         val l = 128f - w / 2
+        p.style = Paint.Style.FILL
         p.color = cChip
         cv.drawRoundRect(l, 196f, l + w, 218f, 11f, 11f, p)
-        text(label, 128f, 212f, 13f, Color.WHITE, Paint.Align.CENTER)
+        text(a, l + 10f, 212f, 14f, cGreen)
+        if (b.isNotEmpty()) text(b, l + 10f + wa, 212f, 14f, Color.WHITE)
     }
 
     /** Panah belok: ang = derajat (0 lurus, + kanan, - kiri), kind 1 = penanda tujuan. */

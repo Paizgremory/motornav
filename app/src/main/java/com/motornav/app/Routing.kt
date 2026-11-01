@@ -164,8 +164,8 @@ object Osrm {
 
 object Geocode {
     private val RX = listOf(
-        Regex("""@(-?\d+\.\d+),(-?\d+\.\d+)"""),
         Regex("""!3d(-?\d+\.\d+)!4d(-?\d+\.\d+)"""),
+        Regex("""@(-?\d+\.\d+),(-?\d+\.\d+)"""),
         Regex("""[?&](?:q|query|ll|destination|daddr)=(-?\d+\.\d+)(?:,|%2C|%2c)\s*(-?\d+\.\d+)"""),
         Regex("""^\s*(-?\d+\.\d+)\s*[, ]\s*(-?\d+\.\d+)\s*$""")
     )

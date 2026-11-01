@@ -53,6 +53,8 @@ object Core {
     private var offCount = 0
     private var lastReroute = 0L
     private var arrivedAt = 0L
+    private var annStep = -1
+    private var annLevel = 0
     @Volatile private var state: NavState? = null
     @Volatile private var dirty = true
     @Volatile private var running = false
@@ -68,6 +70,7 @@ object Core {
         ble = Ble(app) { pushStatus() }
         tiles = Tiles(app) { dirty = true }
         renderer = Renderer(tiles)
+        Voice.init(app)
         inited = true
     }
 
@@ -113,7 +116,9 @@ object Core {
             try {
                 val r = Engine.route(app, fl, fo, p.lat, p.lon)
                 routeIdx = 0; along = 0.0; offCount = 0
+                annStep = -1; annLevel = 0
                 route = r
+                Voice.speak("Navigasi dimulai. Jarak ${spokenTotal(r.total)}, sekitar ${max(1, (r.dur / 60).roundToInt())} menit.")
                 routeMsg = ""
             } catch (e: Exception) {
                 dest = null
@@ -141,12 +146,15 @@ object Core {
         val d = dest ?: return
         rerouting = true
         lastReroute = SystemClock.elapsedRealtime()
+        Voice.speak("Keluar jalur. Mencari rute baru.")
         val fl = lat; val fo = lon
         exec.execute {
             try {
                 val r = Engine.route(app, fl, fo, d.lat, d.lon)
                 routeIdx = 0; along = 0.0; offCount = 0
+                annStep = -1; annLevel = 0
                 route = r
+                Voice.speak("Rute baru ditemukan.")
                 routeMsg = ""
             } catch (e: Exception) {
                 routeMsg = "Rute ulang gagal: ${e.message}"
@@ -256,7 +264,7 @@ object Core {
         val man = r.steps.getOrNull(k + 1)
         val arrived = man == null || rem < 25.0
         if (arrived) {
-            if (arrivedAt == 0L) arrivedAt = SystemClock.elapsedRealtime()
+            if (arrivedAt == 0L) { arrivedAt = SystemClock.elapsedRealtime(); Voice.speak("Anda telah tiba di tujuan.") }
             if (SystemClock.elapsedRealtime() - arrivedAt > 8000) {
                 ui.post { stopNav() }
             }
@@ -280,6 +288,7 @@ object Core {
                 mKind = 1
                 street = dest?.name?.split(", ")?.firstOrNull() ?: "Tujuan"
             } else street = man.name.ifBlank { instr }
+            announce(k + 1, man, instr, mDist)
             val nx = r.steps.getOrNull(k + 2)
             if (nx != null && man.type != "arrive" && man.len < 350.0) {
                 hasThen = true
@@ -289,6 +298,38 @@ object Core {
         }
         state = NavState(la, lo, heading, spd, zoom, headingUp, r, pr.idx, along, mode,
             mDist, mAngle, mKind, street, instr, hasThen, thenAngle, thenKind, rem, remSec)
+    }
+
+    // ---------- suara petunjuk ----------
+    private fun spokenDist(m: Double): String {
+        if (m >= 950) return String.format(Locale("id", "ID"), "%.1f kilometer", m / 1000)
+        val v = ((m / 50).roundToInt() * 50).coerceAtLeast(50)
+        return "$v meter"
+    }
+
+    private fun spokenTotal(m: Double): String =
+        if (m >= 1000) String.format(Locale("id", "ID"), "%.1f kilometer", m / 1000) else "${(m / 10).roundToInt() * 10} meter"
+
+    /** Level 1 = sekitar 500 m, 2 = sekitar 200 m, 3 = sebentar lagi (80 m). Tiap level diucapkan sekali per belokan. */
+    private fun announce(idx: Int, man: Step, instr: String, dist: Double) {
+        if (idx != annStep) { annStep = idx; annLevel = 0 }
+        val level = when {
+            dist <= 80.0 -> 3
+            dist <= 200.0 -> 2
+            dist <= 500.0 -> 1
+            else -> 0
+        }
+        if (level <= annLevel) return
+        annLevel = level
+        if (instr == "Lurus") return
+        val low = instr.replaceFirstChar { it.lowercase() }
+        val onto = if (man.type != "arrive" && man.name.isNotBlank() && !man.type.startsWith("round")) " ke ${man.name}" else ""
+        val msg = when {
+            man.type == "arrive" -> if (level == 3) "Tujuan di depan." else "Dalam ${spokenDist(dist)}, tiba di tujuan."
+            level == 3 -> "$instr sekarang$onto."
+            else -> "Dalam ${spokenDist(dist)}, $low$onto."
+        }
+        Voice.speak(msg)
     }
 
     // ---------- loop gambar + kirim ----------
@@ -375,6 +416,7 @@ object Core {
             if (s != null && s.route != null) sb.append(String.format(Locale.US, "Sisa: %.1f km\n", s.remDist / 1000))
         } else if (mapOnly) sb.append("Mode: peta saja\n")
         if (d != null && Engine.note.isNotEmpty()) sb.append(Engine.note).append('\n')
+        if (Engine.mapNote.isNotEmpty()) sb.append(Engine.mapNote).append('\n')
         if (routeMsg.isNotEmpty()) sb.append(routeMsg).append('\n')
         if (ble.framesSent > 0) sb.append("Frame terkirim: ").append(ble.framesSent).append('\n')
         val txt = sb.toString().trim()

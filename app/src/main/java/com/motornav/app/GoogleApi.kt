@@ -44,7 +44,7 @@ object GoogleApi {
             "routes.legs.steps.polyline.encodedPolyline"
 
     // ---------- HTTP ----------
-    private fun post(url: String, key: String, mask: String, body: String, timeoutMs: Int): String {
+    private fun post(url: String, key: String, mask: String?, body: String, timeoutMs: Int): String {
         val c = URL(url).openConnection() as HttpURLConnection
         c.requestMethod = "POST"
         c.connectTimeout = timeoutMs
@@ -52,7 +52,7 @@ object GoogleApi {
         c.doOutput = true
         c.setRequestProperty("Content-Type", "application/json; charset=utf-8")
         c.setRequestProperty("X-Goog-Api-Key", key)
-        c.setRequestProperty("X-Goog-FieldMask", mask)
+        if (mask != null) c.setRequestProperty("X-Goog-FieldMask", mask)
         try {
             c.outputStream.use { it.write(body.toByteArray(Charsets.UTF_8)) }
             val code = c.responseCode
@@ -67,6 +67,56 @@ object GoogleApi {
         } finally {
             c.disconnect()
         }
+    }
+
+
+    // Gaya malam ala Google Maps, label road dibuat terang agar terbaca di LCD kecil.
+    private const val NIGHT_STYLE = """[
+{"elementType":"geometry","stylers":[{"color":"#242f3e"}]},
+{"elementType":"labels.text.stroke","stylers":[{"color":"#242f3e"}]},
+{"elementType":"labels.text.fill","stylers":[{"color":"#a8b0bd"}]},
+{"featureType":"administrative.locality","elementType":"labels.text.fill","stylers":[{"color":"#d59563"}]},
+{"featureType":"poi","elementType":"labels.text.fill","stylers":[{"color":"#d59563"}]},
+{"featureType":"poi.business","stylers":[{"visibility":"off"}]},
+{"featureType":"poi.park","elementType":"geometry","stylers":[{"color":"#263c3f"}]},
+{"featureType":"poi.park","elementType":"labels.text.fill","stylers":[{"color":"#6b9a76"}]},
+{"featureType":"road","elementType":"geometry","stylers":[{"color":"#4a5568"}]},
+{"featureType":"road","elementType":"geometry.stroke","stylers":[{"color":"#212a37"}]},
+{"featureType":"road","elementType":"labels.text.fill","stylers":[{"color":"#e1e6ee"}]},
+{"featureType":"road.highway","elementType":"geometry","stylers":[{"color":"#7a6c55"}]},
+{"featureType":"road.highway","elementType":"geometry.stroke","stylers":[{"color":"#1f2835"}]},
+{"featureType":"road.highway","elementType":"labels.text.fill","stylers":[{"color":"#f3d19c"}]},
+{"featureType":"transit","elementType":"geometry","stylers":[{"color":"#2f3948"}]},
+{"featureType":"transit","elementType":"labels.icon","stylers":[{"visibility":"off"}]},
+{"featureType":"water","elementType":"geometry","stylers":[{"color":"#17263c"}]},
+{"featureType":"water","elementType":"labels.text.fill","stylers":[{"color":"#7a869a"}]}
+]"""
+
+    /** Buat sesi ubin peta Google (gratis, berlaku sekitar 2 minggu). Coba dengan lalu lintas dulu. */
+    fun createSession(key: String): String {
+        val styles = JSONArray(NIGHT_STYLE)
+        fun body(traffic: Boolean): String {
+            val b = JSONObject()
+            b.put("mapType", "roadmap")
+            b.put("language", "id-ID")
+            b.put("region", "ID")
+            b.put("scale", "scaleFactor2x")
+            b.put("styles", styles)
+            if (traffic) {
+                b.put("layerTypes", JSONArray().put("layerTraffic"))
+                b.put("overlay", false)
+            }
+            return b.toString()
+        }
+        val url = "https://tile.googleapis.com/v1/createSession?key=$key"
+        val txt = try {
+            post(url, key, null, body(true), 15000)
+        } catch (e: Exception) {
+            post(url, key, null, body(false), 15000)
+        }
+        val s = JSONObject(txt).optString("session")
+        if (s.isEmpty()) throw RuntimeException("Sesi peta Google kosong")
+        return s
     }
 
     // ---------- Pencarian tujuan ----------
@@ -226,6 +276,7 @@ object GoogleApi {
 /** Pemilih mesin: Google kalau ada key, jatuh ke OSRM/Nominatim kalau gagal. */
 object Engine {
     @Volatile var note = ""   // keterangan untuk status, mis. "Rute: Google"
+    @Volatile var mapNote = ""
 
     fun route(ctx: Context, fLat: Double, fLon: Double, tLat: Double, tLon: Double): Route {
         val key = GKey.get(ctx)

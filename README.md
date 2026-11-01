@@ -36,7 +36,10 @@ Alternatif: buka folder ini di Android Studio di komputer, lalu Build > Build AP
 ## 4. Rute & pencarian Google (opsional)
 Tempel Google API key di kolom atas aplikasi, tekan **Simpan API key**. Di Google Cloud aktifkan **Routes API** dan **Places API (New)**,
 pasang billing, dan batasi key ke dua API itu. Kalau key kosong atau Google gagal, aplikasi otomatis memakai OSRM/Nominatim
-(status di layar HP menunjukkan mesin yang dipakai). Peta tetap digambar aplikasi.
+(status di layar HP menunjukkan mesin yang dipakai). Peta Google (gaya malam) diambil lewat Map Tiles API, jadi aktifkan juga **Map Tiles API**. Ubin Google hanya disimpan di memori.
+
+## 5. Bagikan dari Google Maps
+Di Google Maps pilih tempat, tekan **Bagikan**, lalu pilih **MotorNav**. Aplikasi mengambil koordinatnya dan langsung membuat rute.
 
 ## Catatan
 - Rute dari server demo OSRM (profil mobil, data OpenStreetMap). Untuk pemakaian pribadi ringan.
