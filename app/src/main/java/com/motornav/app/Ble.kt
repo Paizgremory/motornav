@@ -35,6 +35,9 @@ class Ble(private val ctx: Context, private val onMsg: (String) -> Unit) {
     @Volatile private var lastWriteOk = true
     @Volatile private var lastStatus = -1
     @Volatile var uploading = false
+    @Volatile var cancelUpload = false
+    @Volatile var mtu = 23
+    @Volatile var iconPkg: String? = null            // paket yang logonya sedang tersimpan di ESP32 (hindari kirim ulang)
 
     @Volatile var ready = false
     @Volatile var chunk = 15
@@ -44,6 +47,13 @@ class Ble(private val ctx: Context, private val onMsg: (String) -> Unit) {
     private var scanning = false
     private var fails = 0
     private var fid = 0
+
+    private fun finishReady() {
+        if (ready || chr == null || gatt == null) return
+        ready = true
+        say("Tersambung (paket $chunk B)")
+        Notify.bleReset()
+    }
 
     private fun say(t: String) {
         msg = t
@@ -157,8 +167,9 @@ class Ble(private val ctx: Context, private val onMsg: (String) -> Unit) {
             }
         }
 
-        override fun onMtuChanged(g: BluetoothGatt, mtu: Int, status: Int) {
-            chunk = if (status == BluetoothGatt.GATT_SUCCESS) minOf(200, mtu - 8) else 15
+        override fun onMtuChanged(g: BluetoothGatt, mt: Int, status: Int) {
+            if (status == BluetoothGatt.GATT_SUCCESS) mtu = mt
+            chunk = if (status == BluetoothGatt.GATT_SUCCESS) minOf(200, mt - 8) else 15
             if (chunk < 15) chunk = 15
             g.discoverServices()
         }
@@ -171,8 +182,28 @@ class Ble(private val ctx: Context, private val onMsg: (String) -> Unit) {
             }
             c.writeType = BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE
             chr = c
-            ready = true
-            say("Tersambung (paket $chunk B)")
+            iconPkg = null
+            var wait = false
+            try {                                                    // aktifkan notify dari ESP32 (tombol tolak telepon)
+                val cccd = c.getDescriptor(UUID.fromString("00002902-0000-1000-8000-00805f9b34fb"))
+                if (cccd != null && g.setCharacteristicNotification(c, true)) {
+                    cccd.value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
+                    wait = g.writeDescriptor(cccd)
+                }
+            } catch (e: Exception) {}
+            if (wait) h.postDelayed({ finishReady() }, 1500) else finishReady()
+        }
+
+        override fun onDescriptorWrite(g: BluetoothGatt, d: BluetoothGattDescriptor, status: Int) {
+            h.post { finishReady() }
+        }
+
+        override fun onCharacteristicChanged(g: BluetoothGatt, c: BluetoothGattCharacteristic) {
+            val v = c.value ?: return
+            if (v.size >= 2 && v[0] == 0xE1.toByte()) {
+                if (v[1] == 1.toByte()) Notify.rejectCall(ctx)
+                else if (v[1] == 2.toByte()) Notify.espDone()
+            }
         }
 
         override fun onCharacteristicWrite(g: BluetoothGatt, c: BluetoothGattCharacteristic, status: Int) {
@@ -233,6 +264,115 @@ class Ble(private val ctx: Context, private val onMsg: (String) -> Unit) {
         return true
     }
 
+
+    // ---------- notifikasi & telepon (firmware v22.15) ----------
+    private fun maxPayload() = if (mtu > 23) minOf(mtu - 3, 244) else 20
+
+    /** Kirim notifikasi. icon: null = tanpa logo, kosong = pakai logo yang sudah ada di ESP32, isi = logo 48x48 RGB565 baru. */
+    fun sendNotification(pkg: String, app: String, title: String, msg: String, icon: ByteArray?, drive: Boolean = false, more: Int = 0): Boolean {
+        if (!ready || uploading) return false
+        return synchronized(txLock) {
+            if (uploading) return@synchronized false
+            val pl = maxPayload()
+            if (icon != null && icon.isNotEmpty()) {
+                var off = 0
+                val n = pl - 4
+                while (off < icon.size) {
+                    val k = minOf(n, icon.size - off)
+                    val pk = ByteArray(4 + k)
+                    pk[0] = -1; pk[1] = 0x21
+                    pk[2] = (off and 255).toByte(); pk[3] = ((off shr 8) and 255).toByte()
+                    System.arraycopy(icon, off, pk, 4, k)
+                    if (!write(pk)) return@synchronized false
+                    off += k
+                }
+                iconPkg = pkg
+            }
+            val hasIcon = icon != null
+            val a = app.toByteArray(Charsets.US_ASCII)
+            val t = title.toByteArray(Charsets.US_ASCII)
+            val m = msg.toByteArray(Charsets.US_ASCII)
+            val blob = ByteArray(3 + a.size + t.size + m.size)
+            blob[0] = ((if (hasIcon) 1 else 0) or (if (drive) 2 else 0) or (more.coerceIn(0, 7) shl 2)).toByte()
+            blob[1] = a.size.toByte(); blob[2] = t.size.toByte()
+            System.arraycopy(a, 0, blob, 3, a.size)
+            System.arraycopy(t, 0, blob, 3 + a.size, t.size)
+            System.arraycopy(m, 0, blob, 3 + a.size + t.size, m.size)
+            var off = 0
+            val n = pl - 6
+            while (off < blob.size) {
+                val k = minOf(n, blob.size - off)
+                val pk = ByteArray(6 + k)
+                pk[0] = -1; pk[1] = 0x20
+                pk[2] = (off and 255).toByte(); pk[3] = ((off shr 8) and 255).toByte()
+                pk[4] = (blob.size and 255).toByte(); pk[5] = ((blob.size shr 8) and 255).toByte()
+                System.arraycopy(blob, off, pk, 6, k)
+                if (!write(pk)) return@synchronized false
+                off += k
+            }
+            true
+        }
+    }
+
+    /** Telepon masuk: label (boleh kosong), nama, nomor. Dipotong supaya muat satu paket. */
+    fun sendCallStart(label: String, name: String, number: String): Boolean {
+        var l = label.take(18)
+        var nm = name.take(36)
+        var nu = number.take(22)
+        val max = maxPayload() - 4                      // FF 22 labelLen nameLen
+        while (l.length + nm.length + nu.length > max) {
+            if (nu.length > 0) nu = nu.dropLast(1) else if (nm.length > 4) nm = nm.dropLast(1) else l = l.dropLast(1)
+        }
+        val b = byteArrayOf(-1, 0x22, l.length.toByte(), nm.length.toByte()) +
+            l.toByteArray(Charsets.US_ASCII) + nm.toByteArray(Charsets.US_ASCII) + nu.toByteArray(Charsets.US_ASCII)
+        return sendControl(b)
+    }
+
+    fun sendCallEnd(): Boolean = sendControl(byteArrayOf(-1, 0x23))
+
+    /** Posisi & durasi lagu (detik) untuk slider di layar: [FF][29][pos u16][dur u16]. */
+    fun sendPos(posS: Int, durS: Int): Boolean {
+        val p = posS.coerceIn(0, 65535); val d = durS.coerceIn(0, 65535)
+        return sendControl(byteArrayOf(-1, 0x29, (p and 255).toByte(), (p shr 8).toByte(), (d and 255).toByte(), (d shr 8).toByte()))
+    }
+
+    @Volatile private var bandBusy = false
+
+    /** Spektrum audio asli (16 band, 0..255, bass dulu) untuk visualizer. Dilewati bila kiriman sebelumnya belum selesai. */
+    fun sendBands(b: ByteArray) {
+        if (!ready || uploading || bandBusy) return
+        bandBusy = true
+        try { sendControl(byteArrayOf(-1, 0x25, b.size.toByte()) + b) } finally { bandBusy = false }
+    }
+
+    /** Sampul album 64x64 RGB565 LE (8192 byte): [FF][26][off u16][data]..., lalu [FF][27][1]. */
+    fun sendArt(rgb565: ByteArray): Boolean {
+        if (!ready) return false
+        val n = maxPayload() - 4
+        var off = 0
+        while (off < rgb565.size) {
+            val k = minOf(n, rgb565.size - off)
+            val pk = ByteArray(4 + k)
+            pk[0] = -1; pk[1] = 0x26
+            pk[2] = (off and 255).toByte(); pk[3] = ((off shr 8) and 255).toByte()
+            System.arraycopy(rgb565, off, pk, 4, k)
+            if (!sendControl(pk)) return false
+            off += k
+        }
+        return sendControl(byteArrayOf(-1, 0x27, 1))
+    }
+
+    /** Info lagu untuk animasi standby (firmware v22.21): [FF][24][state][titleLen][artistLen][judul][artis]. */
+    fun sendMusic(playing: Boolean, title: String, artist: String): Boolean {
+        val max = maxPayload() - 5
+        var t = title.take(60)
+        var a = artist.take(40)
+        while (t.length + a.length > max) { if (a.isNotEmpty()) a = a.dropLast(1) else t = t.dropLast(1) }
+        val b = byteArrayOf(-1, 0x24, if (playing) 1 else 0, t.length.toByte(), a.length.toByte()) +
+            t.toByteArray(Charsets.US_ASCII) + a.toByteArray(Charsets.US_ASCII)
+        return sendControl(b)
+    }
+
     // ---------- upload wallpaper (foto 240x240 RGB565, 115200 byte) ----------
     private fun readStatus(): Int {
         val g = gatt ?: return -1
@@ -247,9 +387,10 @@ class Ble(private val ctx: Context, private val onMsg: (String) -> Unit) {
     private fun le32(v: Long) = byteArrayOf(v.toByte(), (v shr 8).toByte(), (v shr 16).toByte(), (v shr 24).toByte())
 
     /** Kirim foto ke slot wallpaper ESP32. Mengembalikan null kalau sukses, atau teks galat. progress: 0..100. */
-    fun uploadWallpaper(data: ByteArray, progress: (Int) -> Unit): String? {
+    fun uploadWallpaper(data: ByteArray, boot: Boolean = false, progress: (Int) -> Unit): String? {
         if (!ready) return "ESP32 belum tersambung"
-        if (data.size != 115200) return "Ukuran data salah"
+        if (data.size < 64 || data.size % 4 != 0) return "Ukuran data salah"
+        cancelUpload = false
         val c = chr ?: return "ESP32 belum tersambung"
         uploading = true                                   // hentikan kiriman frame peta selama upload
         try {
@@ -257,9 +398,9 @@ class Ble(private val ctx: Context, private val onMsg: (String) -> Unit) {
                 var err: String? = null
                 c.writeType = BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT   // pakai konfirmasi: tak ada paket hilang
                 try {
-                    for (attempt in 1..3) {
-                        err = uploadOnce(data, progress)
-                        if (err == null || !ready) break
+                    for (attempt in 1..(if (data.size > 300000) 2 else 3)) {
+                        err = uploadOnce(data, boot, progress)
+                        if (err == null || !ready || cancelUpload) break
                         progress(0)
                     }
                 } finally {
@@ -272,28 +413,29 @@ class Ble(private val ctx: Context, private val onMsg: (String) -> Unit) {
         }
     }
 
-    private fun uploadOnce(data: ByteArray, progress: (Int) -> Unit): String? {
-        if (!write(byteArrayOf(-1, 0x10) + le32(data.size.toLong()), true)) return "Gagal memulai upload (BLE)"
+    private fun uploadOnce(data: ByteArray, boot: Boolean, progress: (Int) -> Unit): String? {
+        if (!write(byteArrayOf(-1, (if (boot) 0x14 else 0x10).toByte()) + le32(data.size.toLong()), true)) return "Gagal memulai upload (BLE)"
         var t = System.currentTimeMillis()
         while (true) {
             val st = readStatus()
             if (st == 2) break
-            if (st == 5) return "ESP32 menolak upload"
+            if (st == 5) return if (boot) "ESP32 menolak. Sudah flash firmware v22.26 + partitions.csv baru?" else "ESP32 menolak upload"
             if (System.currentTimeMillis() - t > 15000) return "ESP32 tidak membalas. Sudah flash firmware v22.13?"
             Thread.sleep(250)
         }
-        val n = maxOf(8, chunk - 1)
+        val n = maxOf(8, if (mtu > 23) minOf(240, mtu - 9) else chunk - 1)   // paket = 6 byte kepala + data, muat di MTU-3
         var off = 0
         while (off < data.size) {
+            if (cancelUpload) return "Dibatalkan"
             val k = minOf(n, data.size - off)
             val pk = ByteArray(6 + k)
             pk[0] = -1
             pk[1] = 0x11
             System.arraycopy(le32(off.toLong()), 0, pk, 2, 4)
             System.arraycopy(data, off, pk, 6, k)
-            if (!write(pk, true)) return "Terputus di tengah upload (${off * 100 / data.size}%)"
+            if (!write(pk, true)) return "Terputus di tengah upload (${(off.toLong() * 100 / data.size).toInt()}%)"
             off += k
-            progress(off * 100 / data.size)
+            progress((off.toLong() * 100 / data.size).toInt())
         }
         val crc = CRC32().also { it.update(data) }.value
         if (!write(byteArrayOf(-1, 0x12) + le32(crc), true)) return "Gagal menutup upload"
@@ -302,8 +444,40 @@ class Ble(private val ctx: Context, private val onMsg: (String) -> Unit) {
             val st = readStatus()
             if (st == 4) return null
             if (st == 5) return "Data rusak (CRC tidak cocok)"
-            if (System.currentTimeMillis() - t > 8000) return "Tidak ada konfirmasi dari ESP32"
+            if (System.currentTimeMillis() - t > 15000) return "Tidak ada konfirmasi dari ESP32"
             Thread.sleep(200)
+        }
+    }
+
+    /** Kosongkan slot wallpaper (ESP32 kembali ke foto bawaan). null = sukses. */
+    fun clearWallpaper(boot: Boolean = false): String? {
+        if (!ready) return "ESP32 belum tersambung"
+        if (uploading) return "Sedang upload"
+        val c = chr ?: return "ESP32 belum tersambung"
+        uploading = true
+        try {
+            return synchronized(txLock) {
+                var res: String? = "Tidak ada konfirmasi (firmware v22.14?)"
+                c.writeType = BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT
+                try {
+                    if (!write(byteArrayOf(-1, (if (boot) 0x17 else 0x13).toByte()), true)) {
+                        res = "Gagal mengirim perintah"
+                    } else {
+                        val t = System.currentTimeMillis()
+                        while (System.currentTimeMillis() - t < 8000) {
+                            val st = readStatus()
+                            if (st == 4) { res = null; break }
+                            if (st == 5) { res = "ESP32 gagal mengosongkan"; break }
+                            Thread.sleep(200)
+                        }
+                    }
+                } finally {
+                    c.writeType = BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE
+                }
+                res
+            }
+        } finally {
+            uploading = false
         }
     }
 }

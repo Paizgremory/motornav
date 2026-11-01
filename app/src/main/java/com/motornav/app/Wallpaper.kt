@@ -5,25 +5,42 @@ import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Matrix
 import android.media.ExifInterface
+import android.media.MediaMetadataRetriever
 import android.net.Uri
+import java.io.ByteArrayOutputStream
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
+import kotlin.math.floor
 import kotlin.math.hypot
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.roundToInt
 
 /**
- * Menyiapkan foto wallpaper untuk layar GC9A01 240x240 (RGB565, 115200 byte).
- * Layar fisik hanya 240x240, jadi "HD" di sini = kualitas terbaik di 240x240:
- *  - dibaca dari foto asli (bukan thumbnail), dipotong persegi di tengah
- *  - diperkecil bertahap (rata-rata area) supaya tidak bergerigi
- *  - ketajaman ditambah sedikit (unsharp mask)
- *  - dikonversi ke RGB565 dengan dithering Floyd-Steinberg: gradasi langit/bayangan tidak "berpita"
+ * Menyiapkan wallpaper (foto / video) untuk layar GC9A01 240x240.
+ * Hasil berupa "citra partisi" yang dikirim apa adanya lewat BLE ke slot wallpaper ESP32:
+ *   foto  = "MNPHOTO1" + 8 byte 0xFF + 115200 byte RGB565 little-endian
+ *   video = "MNVIDEO2" + header 8 KB (jumlah frame, fps, tabel) + frame JPEG 240x240 (rata 4 byte)
+ * Layar fisik 240x240, jadi "HD" = kualitas terbaik di ukuran itu: foto/frame dibaca dari sumber asli, diperkecil bertahap,
+ * dipertajam, lalu foto dikonversi ke RGB565 dengan dithering Floyd-Steinberg (gradasi tidak berpita).
  */
 object Wallpaper {
     const val SIZE = 240
+    const val CAP = 2293760                         // kapasitas slot wallpaper = partisi spiffs 0x230000 (firmware v22.26)
+    const val BOOT_CAP = 524288                     // kapasitas animasi boot = partisi bootanim 0x80000
+    const val VID_HDR = 8192
+    const val VID_MAXF = 900
+    const val BUDGET = (CAP - VID_HDR - 8192) * 97 / 100
+    fun budgetFor(cap: Int) = (cap - VID_HDR - 8192) * 97 / 100
 
-    /** Baca foto dari Uri sebesar mungkin yang masih wajar (sisi pendek >= 960 px), putar sesuai EXIF. */
-    fun load(ctx: Context, uri: Uri): Bitmap? {
+    /** Tampilan: gelap tengah 0..60 (%), zoom >= 1, geser -1..1, ketajaman. */
+    class Look(val dim: Int, val zoom: Float, val panX: Float, val panY: Float, val sharpen: Boolean = true)
+
+    fun isVideo(ctx: Context, uri: Uri): Boolean = (ctx.contentResolver.getType(uri) ?: "").startsWith("video")
+
+    // ---------- foto ----------
+    /** Baca foto sebesar mungkin yang masih wajar (sisi pendek >= 960 px), putar sesuai EXIF. */
+    fun loadPhoto(ctx: Context, uri: Uri): Bitmap? {
         val cr = ctx.contentResolver
         val o = BitmapFactory.Options().apply { inJustDecodeBounds = true }
         cr.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, o) }
@@ -49,99 +66,210 @@ object Wallpaper {
         return bmp
     }
 
-    /**
-     * Hasil: pair(RGB565 little-endian 115200 byte, bitmap pratinjau persis seperti yang tampil di layar).
-     * zoom 1.0 = potong persegi penuh; geser (panX/panY -1..1) menggeser area potong bila zoom > 1.
-     * dim 0..60 = % gelap di tengah (supaya jam terbaca), sama seperti halaman WiFi.
-     */
-    fun prepare(src: Bitmap, dim: Int, zoom: Float = 1f, panX: Float = 0f, panY: Float = 0f, sharpen: Boolean = true): Pair<ByteArray, Bitmap> {
-        // 1. potong persegi (dengan zoom/geser)
-        val side0 = min(src.width, src.height)
-        val side = max(1, (side0 / zoom.coerceIn(1f, 4f)).toInt())
-        val cx = src.width / 2f + panX.coerceIn(-1f, 1f) * (src.width - side) / 2f
-        val cy = src.height / 2f + panY.coerceIn(-1f, 1f) * (src.height - side) / 2f
-        val x0 = (cx - side / 2f).toInt().coerceIn(0, src.width - side)
-        val y0 = (cy - side / 2f).toInt().coerceIn(0, src.height - side)
-        var b = Bitmap.createBitmap(src, x0, y0, side, side)
-
-        // 2. perkecil bertahap ke 480 (tiap langkah <= 2x, rata-rata area), lalu 2x2 rata-rata ke 240 di ruang cahaya linear
-        val mid = SIZE * 2
-        while (b.width / 2 >= mid) b = Bitmap.createScaledBitmap(b, b.width / 2, b.height / 2, true)
-        if (b.width != mid) b = Bitmap.createScaledBitmap(b, mid, mid, true)
-        val big = IntArray(mid * mid)
-        b.getPixels(big, 0, mid, 0, 0, mid, mid)
-        val lin = FloatArray(256) { Math.pow(it / 255.0, 2.2).toFloat() }
-        val r = FloatArray(SIZE * SIZE); val g = FloatArray(SIZE * SIZE); val bl = FloatArray(SIZE * SIZE)
-        for (y in 0 until SIZE) for (x in 0 until SIZE) {
-            var sr = 0f; var sg = 0f; var sb = 0f
-            for (dy in 0..1) for (dx in 0..1) {
-                val p = big[(y * 2 + dy) * mid + x * 2 + dx]
-                sr += lin[(p shr 16) and 255]; sg += lin[(p shr 8) and 255]; sb += lin[p and 255]
-            }
-            val i = y * SIZE + x
-            r[i] = (Math.pow((sr / 4).toDouble(), 1 / 2.2) * 255.0).toFloat()
-            g[i] = (Math.pow((sg / 4).toDouble(), 1 / 2.2) * 255.0).toFloat()
-            bl[i] = (Math.pow((sb / 4).toDouble(), 1 / 2.2) * 255.0).toFloat()
-        }
-
-        // 3. ketajaman: unsharp mask 3x3 (tepi tidak diubah)
-        if (sharpen) for (ch in arrayOf(r, g, bl)) {
-            val o = ch.copyOf()
-            for (y in 1 until SIZE - 1) for (x in 1 until SIZE - 1) {
-                val i = y * SIZE + x
-                val blur = (o[i - 1] + o[i + 1] + o[i - SIZE] + o[i + SIZE]) * 0.125f + o[i] * 0.5f
-                ch[i] = (o[i] + 0.6f * (o[i] - blur)).coerceIn(0f, 255f)
-            }
-        }
-
-        // 4. gelapkan tengah (jam) + potong lingkaran
-        val k = dim.coerceIn(0, 60) / 100f
-        for (y in 0 until SIZE) for (x in 0 until SIZE) {
-            val i = y * SIZE + x
-            val d = hypot(x - 119.5, y - 119.5)
-            if (d > 121) { r[i] = 0f; g[i] = 0f; bl[i] = 0f; continue }
-            val f = 1f - k * max(0f, 1f - (d / 110f).toFloat())
-            r[i] *= f; g[i] *= f; bl[i] *= f
-        }
-
-        // 5. RGB565 + dithering Floyd-Steinberg (serpentine)
-        val out = ByteArray(SIZE * SIZE * 2)
-        val chans = arrayOf(r, g, bl)
+    /** Foto -> (citra partisi untuk dikirim, bitmap pratinjau persis seperti di layar). */
+    fun preparePhoto(src: Bitmap, look: Look): Pair<ByteArray, Bitmap> {
+        val ch = planes(src, look)
         val q = IntArray(SIZE * SIZE * 3)
+        val chans = ch
         for (y in 0 until SIZE) {
             val ltr = y % 2 == 0
+            val dir = if (ltr) 1 else -1
             var x = if (ltr) 0 else SIZE - 1
             while (x in 0 until SIZE) {
                 val i = y * SIZE + x
-                val dir = if (ltr) 1 else -1
-                if (hypot(x - 119.5, y - 119.5) > 121) { q[i * 3] = 0; q[i * 3 + 1] = 0; q[i * 3 + 2] = 0; x += dir; continue }
+                if (hypot(x - 119.5, y - 119.5) > 121) { x += dir; continue }
                 for (c in 0..2) {
-                    val ch = chans[c]
-                    val old = ch[i].coerceIn(0f, 255f)
-                    val bits = if (c == 1) 6 else 5
-                    val lv = (1 shl bits) - 1
+                    val cc = chans[c]
+                    val old = cc[i].coerceIn(0f, 255f)
+                    val lv = if (c == 1) 63 else 31
                     val qi = (old / 255f * lv).roundToInt().coerceIn(0, lv)
                     q[i * 3 + c] = qi
                     val err = old - qi * 255f / lv
-                    if (x + dir in 0 until SIZE) ch[i + dir] += err * 7f / 16f
+                    if (x + dir in 0 until SIZE) cc[i + dir] += err * 7f / 16f
                     if (y + 1 < SIZE) {
-                        if (x - dir in 0 until SIZE) ch[i + SIZE - dir] += err * 3f / 16f
-                        ch[i + SIZE] += err * 5f / 16f
-                        if (x + dir in 0 until SIZE) ch[i + SIZE + dir] += err * 1f / 16f
+                        if (x - dir in 0 until SIZE) cc[i + SIZE - dir] += err * 3f / 16f
+                        cc[i + SIZE] += err * 5f / 16f
+                        if (x + dir in 0 until SIZE) cc[i + SIZE + dir] += err * 1f / 16f
                     }
                 }
                 x += dir
             }
         }
+        val img = ByteArray(16 + SIZE * SIZE * 2)
+        "MNPHOTO1".toByteArray().copyInto(img)
+        for (k in 8 until 16) img[k] = -1
         val pv = IntArray(SIZE * SIZE)
         for (i in 0 until SIZE * SIZE) {
             val rq = q[i * 3]; val gq = q[i * 3 + 1]; val bq = q[i * 3 + 2]
             val v = (rq shl 11) or (gq shl 5) or bq
-            out[i * 2] = (v and 255).toByte()
-            out[i * 2 + 1] = (v shr 8).toByte()
+            img[16 + i * 2] = (v and 255).toByte()
+            img[16 + i * 2 + 1] = (v shr 8).toByte()
             pv[i] = (0xFF shl 24) or ((rq * 255 / 31) shl 16) or ((gq * 255 / 63) shl 8) or (bq * 255 / 31)
         }
-        val prevBmp = Bitmap.createBitmap(pv, SIZE, SIZE, Bitmap.Config.ARGB_8888)
-        return Pair(out, prevBmp)
+        return Pair(img, Bitmap.createBitmap(pv, SIZE, SIZE, Bitmap.Config.ARGB_8888))
+    }
+
+    // ---------- pemrosesan bersama ----------
+    private fun square480(src: Bitmap, l: Look): IntArray {
+        val side0 = min(src.width, src.height)
+        val side = max(1, (side0 / l.zoom.coerceIn(1f, 4f)).toInt())
+        val cx = src.width / 2f + l.panX.coerceIn(-1f, 1f) * (src.width - side) / 2f
+        val cy = src.height / 2f + l.panY.coerceIn(-1f, 1f) * (src.height - side) / 2f
+        val x0 = (cx - side / 2f).toInt().coerceIn(0, src.width - side)
+        val y0 = (cy - side / 2f).toInt().coerceIn(0, src.height - side)
+        var b = Bitmap.createBitmap(src, x0, y0, side, side)
+        val mid = SIZE * 2
+        while (b.width / 2 >= mid) b = Bitmap.createScaledBitmap(b, b.width / 2, b.height / 2, true)   // tiap langkah <= 2x
+        if (b.width != mid) b = Bitmap.createScaledBitmap(b, mid, mid, true)
+        val px = IntArray(mid * mid)
+        b.getPixels(px, 0, mid, 0, 0, mid, mid)
+        return px
+    }
+
+    /** Foto/frame -> 3 bidang warna 240x240 (0..255): potong, perkecil, pertajam, gelapkan tengah, potong lingkaran. */
+    private fun planes(src: Bitmap, l: Look): Array<FloatArray> {
+        val big = square480(src, l)
+        val mid = SIZE * 2
+        val ch = Array(3) { FloatArray(SIZE * SIZE) }
+        for (y in 0 until SIZE) for (x in 0 until SIZE) {
+            var sr = 0; var sg = 0; var sb = 0
+            for (dy in 0..1) for (dx in 0..1) {
+                val p = big[(y * 2 + dy) * mid + x * 2 + dx]
+                sr += (p shr 16) and 255; sg += (p shr 8) and 255; sb += p and 255
+            }
+            val i = y * SIZE + x
+            ch[0][i] = sr / 4f; ch[1][i] = sg / 4f; ch[2][i] = sb / 4f
+        }
+        if (l.sharpen) for (c in ch) {                              // unsharp mask 3x3
+            val o = c.copyOf()
+            for (y in 1 until SIZE - 1) for (x in 1 until SIZE - 1) {
+                val i = y * SIZE + x
+                val blur = (o[i - 1] + o[i + 1] + o[i - SIZE] + o[i + SIZE]) * 0.125f + o[i] * 0.5f
+                c[i] = (o[i] + 0.6f * (o[i] - blur)).coerceIn(0f, 255f)
+            }
+        }
+        val k = l.dim.coerceIn(0, 60) / 100f
+        for (y in 0 until SIZE) for (x in 0 until SIZE) {
+            val i = y * SIZE + x
+            val d = hypot(x - 119.5, y - 119.5)
+            if (d > 121) { ch[0][i] = 0f; ch[1][i] = 0f; ch[2][i] = 0f; continue }
+            val f = 1f - k * max(0.0, 1.0 - d / 110.0).toFloat()
+            ch[0][i] *= f; ch[1][i] *= f; ch[2][i] *= f
+        }
+        return ch
+    }
+
+    private fun toBitmap(ch: Array<FloatArray>): Bitmap {
+        val pv = IntArray(SIZE * SIZE)
+        for (i in 0 until SIZE * SIZE) {
+            val r = ch[0][i].roundToInt().coerceIn(0, 255)
+            val g = ch[1][i].roundToInt().coerceIn(0, 255)
+            val b = ch[2][i].roundToInt().coerceIn(0, 255)
+            pv[i] = (0xFF shl 24) or (r shl 16) or (g shl 8) or b
+        }
+        return Bitmap.createBitmap(pv, SIZE, SIZE, Bitmap.Config.ARGB_8888)
+    }
+
+    fun previewOnly(src: Bitmap, look: Look): Bitmap = toBitmap(planes(src, look))
+
+    private fun jpeg(ch: Array<FloatArray>, q: Int): ByteArray {
+        val bo = ByteArrayOutputStream(16000)
+        toBitmap(ch).compress(Bitmap.CompressFormat.JPEG, q, bo)
+        return bo.toByteArray()
+    }
+
+    private fun pad(n: Int) = (n + 3) and 3.inv()
+
+    // ---------- video ----------
+    class VideoSource(val r: MediaMetadataRetriever, val durSec: Double)
+
+    fun openVideo(ctx: Context, uri: Uri): VideoSource? {
+        val r = MediaMetadataRetriever()
+        return try {
+            r.setDataSource(ctx, uri)
+            val ms = r.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull() ?: 0L
+            if (ms <= 0) { r.release(); null } else VideoSource(r, ms / 1000.0)
+        } catch (e: Exception) { try { r.release() } catch (x: Exception) {}; null }
+    }
+
+    fun frameAt(v: VideoSource, sec: Double): Bitmap? = try {
+        v.r.getFrameAtTime((min(max(sec, 0.0), v.durSec - 0.02) * 1_000_000).toLong(), MediaMetadataRetriever.OPTION_CLOSEST)
+    } catch (e: Exception) { null }
+
+    /** Contoh frame (tersebar rata) untuk pratinjau dan perkiraan ukuran. */
+    fun sampleFrames(v: VideoSource, n: Int): List<Bitmap> {
+        val l = ArrayList<Bitmap>()
+        for (j in 0 until n) {
+            var f = frameAt(v, v.durSec * (j + 0.5) / n) ?: continue
+            val sh = min(f.width, f.height)
+            if (sh > 960) {                                           // hemat memori: contoh cukup 960 px
+                val k = 960f / sh
+                f = Bitmap.createScaledBitmap(f, (f.width * k).toInt(), (f.height * k).toInt(), true)
+            }
+            l.add(f)
+        }
+        return l
+    }
+
+    /** Rata-rata ukuran satu frame JPEG (byte, sudah rata 4) pada pengaturan ini. */
+    fun frameSize(samples: List<Bitmap>, look: Look, quality: Int): Double {
+        if (samples.isEmpty()) return 0.0
+        var s = 0.0
+        for (b in samples) s += pad(jpeg(planes(b, look), quality).size)
+        return s / samples.size
+    }
+
+    class VideoOpts(val look: Look, val fps: Int, val quality: Int, val auto: Boolean, val cap: Int = CAP)
+    class VideoResult(val image: ByteArray, val frames: Int, val fps: Int, val seconds: Double, val trimmed: Boolean)
+
+    /**
+     * Ubah video jadi citra "MNVIDEO2". Manual: fps & kualitas dipakai apa adanya, video dipotong (dari awal) bila tak muat.
+     * Otomatis: fps diturunkan (min 6) agar seluruh video muat. Kualitas JPEG per frame disesuaikan otomatis bila ukuran mepet.
+     */
+    fun encodeVideo(v: VideoSource, samples: List<Bitmap>, vo: VideoOpts, progress: (Int, Int) -> Unit, cancelled: () -> Boolean): VideoResult? {
+        val dur = v.durSec
+        val s = frameSize(samples, vo.look, vo.quality)
+        if (s <= 0.0) return null
+        val budget = budgetFor(vo.cap)
+        val nFit = max(1, (budget / (s * 1.05)).toInt())
+        val fps = if (vo.auto) max(6, min(vo.fps, floor(nFit / dur).toInt())) else vo.fps
+        val wanted = max(1, floor(dur * fps).toInt())
+        val n = min(wanted, min(nFit, VID_MAXF))
+        var q = vo.quality
+        val frames = ArrayList<ByteArray>()
+        var total = 0
+        var lastCh: Array<FloatArray>? = null
+        for (i in 0 until n) {
+            if (cancelled()) return null
+            progress(i, n)
+            val bmp = frameAt(v, (i + 0.5) / fps)
+            val ch = if (bmp != null) planes(bmp, vo.look) else (lastCh ?: continue)
+            lastCh = ch
+            var b = jpeg(ch, q)
+            var qq = q
+            while (b.size > 60000 && qq > 20) { qq -= 8; b = jpeg(ch, qq) }       // batas firmware 64 KB per frame
+            val sz = pad(b.size)
+            val per = (budget - total).toDouble() / (n - i)
+            frames.add(b); total += sz
+            if (sz > per) q = max(20, q - (if (sz > per * 1.25) 8 else 4))
+            else if (sz < per * 0.8) q = min(vo.quality, q + 2)
+        }
+        while (total > budget && frames.size > 1) total -= pad(frames.removeAt(frames.size - 1).size)
+        if (frames.isEmpty()) return null
+        val cnt = frames.size
+        val img = ByteArray(VID_HDR + total)
+        java.util.Arrays.fill(img, 0xFF.toByte())
+        val bb = ByteBuffer.wrap(img).order(ByteOrder.LITTLE_ENDIAN)
+        "MNVIDEO2".toByteArray().copyInto(img)
+        bb.putShort(8, cnt.toShort()); bb.putShort(10, fps.toShort()); bb.putInt(12, total)
+        var off = 0
+        for (i in 0 until cnt) {
+            val f = frames[i]
+            bb.putInt(16 + i * 8, off); bb.putInt(20 + i * 8, f.size)
+            System.arraycopy(f, 0, img, VID_HDR + off, f.size)
+            off += pad(f.size)
+        }
+        progress(n, n)
+        return VideoResult(img, cnt, fps, cnt.toDouble() / fps, cnt < floor(dur * fps).toInt())
     }
 }

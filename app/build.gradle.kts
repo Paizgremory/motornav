@@ -11,8 +11,8 @@ android {
         applicationId = "com.motornav.app"
         minSdk = 26
         targetSdk = 34
-        versionCode = 1
-        versionName = "1.0"
+        versionCode = 46
+        versionName = "3.16"
     }
     buildTypes {
         release { isMinifyEnabled = false }

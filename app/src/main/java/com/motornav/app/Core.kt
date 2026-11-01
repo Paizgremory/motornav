@@ -74,6 +74,12 @@ object Core {
         inited = true
     }
 
+    /** BLE bila sudah dibuat dan tersambung (aman dipanggil dari penerima/layanan lain), selain itu null. */
+    /** True saat sedang navigasi (rute atau mode peta). */
+    fun isNavigating(): Boolean = inited && navOn()
+
+    fun bleIfReady(): Ble? = if (inited && ble.ready) ble else null
+
     fun start() {
         if (running) return
         running = true
@@ -345,6 +351,9 @@ object Core {
         var lastState = 0L
         var lastTime = 0L
         var lastStatus = 0L
+        var lastBatt = 0L
+        var lastMusic = 0L
+        var lastCfg = 0L
         while (running) {
             try {
                 val now = SystemClock.elapsedRealtime()
@@ -361,6 +370,11 @@ object Core {
                         lastTime = now
                     }
                 }
+                if (now - lastMusic > 1000) { lastMusic = now; Music.poll(app, ble) }
+                if (Cfg.dirty && ble.ready && now - lastCfg > 300) {            // pengaturan tampilan: kirim bila berubah / baru tersambung
+                    lastCfg = now
+                    if (ble.sendControl(Cfg.packet(app))) Cfg.dirty = false
+                }
                 val st = state
                 if (on && st != null) {
                     val sig = sigOf(st)
@@ -376,6 +390,7 @@ object Core {
                         lastRender = SystemClock.elapsedRealtime()
                     }
                 }
+                if (now - lastBatt > 30000) { lastBatt = now; Notify.batteryCheck(app) }
                 if (now - lastStatus > 1000) { pushStatus(); lastStatus = now }
             } catch (e: InterruptedException) {
                 return

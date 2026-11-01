@@ -1,12 +1,12 @@
-# MotorNav (aplikasi Android pengganti Chronos)
+# MotorNav (aplikasi Android untuk layar motor)
 
 Aplikasi ini mengurus navigasi sendiri: cari tujuan, buat rute (OSRM), gambar peta gelap + garis rute + banner belokan +
 kecepatan + ETA di HP, lalu kirim sebagai gambar 240x240 lewat BLE ke ESP32 "Motor Nav".
-Tidak perlu Chronos maupun Google Maps.
+Tidak perlu aplikasi lain.
 
 ## 1. Flash firmware baru
-Pakai folder `motor_nav_esp32_v22` (v22.12) dari zip firmware. Board: ESP32 biasa, partisi sama seperti sebelumnya
-(file partitions.csv ikut). Setelah flash, ESP32 tetap bisa dipakai dengan Chronos.
+Pakai folder `motor_nav_esp32_v22` (v22.26) dari zip firmware. Board: ESP32 biasa. PARTISI BERUBAH di v22.26 (program 1,25 MB, wallpaper 2,19 MB, animasi boot 512 KB):
+flash ulang penuh (file .merged.bin di alamat 0x0) dengan partitions.csv yang ikut, lalu kirim ulang wallpaper dari aplikasi. Firmware v22.22 tidak lagi mendukung Chronos: semua data lewat aplikasi MotorNav.
 
 ## 2. Bangun APK (tanpa Android Studio, lewat GitHub Actions)
 Di Termux:
@@ -33,19 +33,72 @@ Alternatif: buka folder ini di Android Studio di komputer, lalu Build > Build AP
 3. Tulis tujuan (nama tempat, `lat,lon`, atau tempel link Google Maps) lalu **Cari tujuan** dan pilih hasilnya.
 4. Aplikasi tetap jalan saat layar HP mati (ada notifikasi "MotorNav aktif"). Matikan penghematan baterai untuk aplikasi ini.
 
+## Animasi boot
+Menu Layar > "Animasi boot": pilih video, Kirim. Video diputar sekali tiap ESP32 dinyalakan (sentuh sensor = lewati). "Hapus animasi boot" mengosongkan slot.
+
 ## 4. Rute & pencarian Google (opsional)
 Tempel Google API key di kolom atas aplikasi, tekan **Simpan API key**. Di Google Cloud aktifkan **Routes API** dan **Places API (New)**,
 pasang billing, dan batasi key ke dua API itu. Kalau key kosong atau Google gagal, aplikasi otomatis memakai OSRM/Nominatim
 (status di layar HP menunjukkan mesin yang dipakai). Peta Google (gaya malam) diambil lewat Map Tiles API, jadi aktifkan juga **Map Tiles API**. Ubin Google hanya disimpan di memori.
 
-## 5. Bagikan dari Google Maps
-Di Google Maps pilih tempat, tekan **Bagikan**, lalu pilih **MotorNav**. Aplikasi mengambil koordinatnya dan langsung membuat rute.
+## 5. Wallpaper foto & video lewat Bluetooth (butuh firmware v22.14)
+Mode upload WiFi sudah dihapus; semuanya lewat aplikasi. Di bagian "Wallpaper layar standby": **Pilih foto/video**, atur gelap/zoom/geser,
+lalu **Kirim ke ESP32** (ESP32 harus tersambung). Hasil diverifikasi CRC dan langsung tampil tanpa restart.
+- Foto: dikirim sekitar 10-30 detik. Dibaca dari file asli, diperkecil halus, dipertajam, di-dithering.
+- Video: HP mengubah video jadi frame JPEG 240x240 (satu slot ~2,3 MB), lalu mengirimnya (beberapa menit). Atur **FPS** (5-30) dan
+  **Kualitas/detail JPEG** (30-95); teks perkiraan menunjukkan berapa detik yang muat. "Otomatis" menurunkan FPS (min 6) agar seluruh video muat;
+  matikan untuk memakai FPS persis seperti slider (video dipotong dari awal bila tak muat).
+- **Hapus wallpaper** mengembalikan foto bawaan. Menu pengaturan di ESP32 (tahan 4 dtk di standby) item WALLPAPER hanya menampilkan isi slot.
+Layar GC9A01 fisiknya 240x240, jadi detail maksimum ditentukan oleh ukuran itu.
 
-## Catatan
-- Rute dari server demo OSRM (profil mobil, data OpenStreetMap). Untuk pemakaian pribadi ringan.
-- Notifikasi, telepon, dan info lagu dari Chronos belum ada di aplikasi ini.
+## 6. Notifikasi & telepon di layar motor (v3.8 + firmware v22.15)
+Butuh firmware v22.15. Di bagian "Notifikasi & telepon di layar motor":
+1. **Beri akses notifikasi**: aktifkan MotorNav di daftar. Android 13+ bila pilihan abu-abu: Info aplikasi MotorNav > menu titik tiga > *Izinkan setelan terbatas*, lalu ulangi.
+2. **Izin telepon**: izinkan Telepon, Log panggilan (untuk nomor penelepon), dan Kontak (untuk nama).
+3. Sambungkan ESP32, lalu coba **Tes notifikasi** dan **Tes telepon**.
+- Layar notifikasi: logo asli aplikasi, nama aplikasi, pengirim (huruf besar), isi pesan huruf ukuran 2 yang berganti halaman otomatis; pesan panjang tampil lebih lama (maks sekitar 26 dtk). Sentuh sensor untuk menutup.
+- Yang diteruskan: notifikasi bersuara (bukan senyap/ongoing/ringkasan grup/media/navigasi), tidak saat Jangan Ganggu aktif. Tombol **Pilih aplikasi** memilih aplikasi mana yang boleh tampil (daftar terisi setelah aplikasi itu pernah mengirim notifikasi).
+- **Mode berkendara** (bawaan aktif): saat navigasi berjalan, hanya aplikasi prioritas (bawaan: WhatsApp, Telegram, SMS, Signal, Line, Instagram, Messenger; bisa diubah lewat **Aplikasi prioritas berkendara**) yang tampil, dan tampilannya singkat: 4,5 dtk, satu halaman, bunyi pendek. Telepon tetap selalu tampil.
+- Emoji dan aksen tidak bisa dicetak font layar: emoji dibuang, aksen disederhanakan (e -> e). Pesan berisi emoji saja tampil "(emoji / stiker)".
+- **Antrean notifikasi:** bila beberapa pesan masuk berdekatan, HP menahannya (maks 5) dan mengirim satu per satu setelah layar motor selesai menampilkan yang sebelumnya. Lencana oranye "+N" di dekat logo menunjukkan berapa yang masih menunggu. Yang terlama dibuang bila antrean penuh.
+- **Peringatan baterai HP rendah:** layar motor menampilkan peringatan saat baterai HP turun melewati 20%, 10%, dan 5% (tidak saat sedang diisi). Bisa dimatikan di menu.
+- **Tolak telepon dari motor:** saat layar telepon tampil, TAHAN sensor 0,7 dtk = telepon ditolak (butuh izin Telepon lengkap, termasuk "Menjawab dan mengakhiri panggilan"; panggilan WhatsApp ditolak lewat tombol Tolak di notifikasinya). Sentuh singkat hanya menutup layar.
+- **Panggilan tak terjawab** tampil sebagai notifikasi "Tidak terjawab" berisi nama/nomor dan jam. Notifikasi missed call bawaan dialer tidak ditampilkan dobel.
+- Telepon biasa terbaca dari status telepon; panggilan WhatsApp/Telegram terbaca dari notifikasinya. Layar telepon menutup otomatis saat diangkat/ditolak/selesai.
 
-## 5. Wallpaper layar standby lewat Bluetooth (butuh firmware v22.13)
-Di aplikasi, bagian "Wallpaper layar standby": Pilih foto, atur gelap/zoom/geser, tekan **Kirim ke ESP32** (ESP32 harus sudah tersambung).
-Foto dikirim lewat BLE (sekitar 10-30 detik), diverifikasi CRC, lalu langsung tampil tanpa restart. Mode WiFi lama tetap ada (dipakai untuk video).
-Layar GC9A01 fisiknya 240x240, jadi foto diproses sebaik mungkin di ukuran itu: dibaca dari foto asli, diperkecil halus, dipertajam, dan di-dithering.
+## 7. Animasi musik di layar standby (v3.16 + firmware v22.24)
+Saat lagu diputar di HP (Spotify, YouTube Music, dll.), MotorNav mengirim ke ESP32:
+- **Judul, artis, status** (butuh Akses notifikasi aktif, sama seperti bagian 6).
+- **Gambar sampul** 64x64, digambar semi-transparan di atas wallpaper (standby foto/video) dan hilang saat lagu dijeda/berganti.
+- **Visualizer asli**: spektrum suara HP (16 band) dikirim ~20x/dtk, batang pelangi mengikuti musik. Butuh izin **Rekam audio**
+  (tombol "3. Izin Rekam audio"). Tanpa izin atau bila HP menolak, visualizer memakai simulasi. Status tampil di bagian notifikasi.
+- Standby **wajah**: wajah menari + not melayang, lompatannya mengikuti bass lagu.
+
+## 8. Pengaturan tampilan standby & musik (v3.16 + firmware v22.24)
+Bagian "Pengaturan tampilan standby & musik" di aplikasi. Semua perubahan langsung dikirim ke ESP32 dan disimpan di sana (tetap ada setelah mati-hidup);
+nilainya juga diingat aplikasi dan dikirim ulang tiap tersambung.
+- Opasitas gambar sampul, tampil/sembunyikan sampul
+- Keputihan jam di tengah
+- Visualizer: hidup/mati, tinggi batang, keterlihatan (tembus pandang)
+- Kecepatan putaran cincin pelangi (0 = diam)
+- Kartu pemutar (judul, artis, detik) hidup/mati
+- Lama menunggu sebelum masuk standby (5-120 dtk)
+- Wajah menari saat lagu diputar
+- **Kembalikan ke bawaan** mengembalikan semuanya.
+Pengaturan wallpaper (gelap/zoom/geser/FPS/kualitas) tetap di bagian "Wallpaper layar standby".
+
+## 9. Tab, slider lagu, kecerahan (v3.16 + firmware v22.24)
+Aplikasi kini punya 4 tab: **Navigasi**, **Musik**, **Layar**, **Notifikasi**. Bagian atas (status, sambungkan ESP32) selalu terlihat.
+- **Musik**: kartu pemutar (judul, artis, slider geser lagu, sebelumnya/putar/berikutnya) + semua pengaturan tampilan musik.
+  Di layar standby foto/video, posisi lagu tampil sebagai garis bergelombang putih (sudah diputar) dan garis datar abu-abu (sisa), lengkap dengan waktu.
+- **Layar**: **kecerahan layar** (10-100%, diredupkan lewat perangkat lunak karena modul tanpa pin BL), keputihan jam, lama menunggu standby,
+  kecepatan cincin pelangi, tombol kembalikan ke bawaan, dan wallpaper.
+
+## 10. Koleksi wallpaper (v3.16)
+Tab **Layar** > **Koleksi wallpaper**: daftar semua wallpaper yang pernah Anda siapkan, lengkap dengan thumbnail.
+- **Pakai** (atau ketuk gambarnya) mengirim wallpaper itu ke ESP32; tanda ✓ menunjukkan yang sedang dipakai. Foto sekitar 10-30 dtk, video beberapa menit.
+- **Foto bawaan** mengembalikan wallpaper dari firmware.
+- Ketuk nama untuk mengganti nama, **Hapus** untuk membuang dari koleksi (wallpaper yang sudah ada di ESP32 tidak berubah).
+- Wallpaper baru: di bagian "Tambah wallpaper baru", pilih foto/video, atur, lalu **Kirim ke ESP32** (otomatis masuk koleksi) atau **Simpan saja**
+  (masuk koleksi tanpa dikirim). Yang tersimpan adalah hasil olahan siap kirim, jadi memilihnya nanti tidak perlu diolah ulang.
+- Koleksi disimpan di HP (bukan di ESP32), jadi ESP32 tetap satu slot besar seperti sebelumnya.

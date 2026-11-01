@@ -44,6 +44,7 @@ class KeepAliveService : Service() {
 
     override fun onDestroy() {
         try { wl?.release() } catch (e: Exception) {}
+        Music.shutdown()
         Core.stop()
         super.onDestroy()
     }
