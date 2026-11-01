@@ -81,7 +81,7 @@ object GoogleApi {
 {"featureType":"poi.park","elementType":"geometry","stylers":[{"color":"#263c3f"}]},
 {"featureType":"poi.park","elementType":"labels.text.fill","stylers":[{"color":"#6b9a76"}]},
 {"featureType":"road","elementType":"geometry","stylers":[{"color":"#4a5568"}]},
-{"featureType":"road","elementType":"geometry.stroke","stylers":[{"color":"#212a37"}]},
+{"featureType":"road","elementType":"geometry.stroke","stylers":[{"visibility":"off"}]},
 {"featureType":"road","elementType":"labels.text.fill","stylers":[{"color":"#e1e6ee"}]},
 {"featureType":"road.highway","elementType":"geometry","stylers":[{"color":"#7a6c55"}]},
 {"featureType":"road.highway","elementType":"geometry.stroke","stylers":[{"color":"#1f2835"}]},
@@ -89,7 +89,15 @@ object GoogleApi {
 {"featureType":"transit","elementType":"geometry","stylers":[{"color":"#2f3948"}]},
 {"featureType":"transit","elementType":"labels.icon","stylers":[{"visibility":"off"}]},
 {"featureType":"water","elementType":"geometry","stylers":[{"color":"#17263c"}]},
-{"featureType":"water","elementType":"labels.text.fill","stylers":[{"color":"#7a869a"}]}
+{"featureType":"water","elementType":"labels.text.fill","stylers":[{"color":"#7a869a"}]},
+{"featureType":"poi","elementType":"labels.icon","stylers":[{"visibility":"off"}]},
+{"featureType":"poi.business","elementType":"labels","stylers":[{"visibility":"off"}]},
+{"featureType":"administrative.neighborhood","elementType":"labels","stylers":[{"visibility":"off"}]},
+{"featureType":"administrative.land_parcel","elementType":"labels","stylers":[{"visibility":"off"}]},
+{"featureType":"road.local","elementType":"geometry","stylers":[{"color":"#3d4859"}]},
+{"featureType":"road.local","elementType":"labels","stylers":[{"visibility":"off"}]},
+{"featureType":"road.arterial","elementType":"geometry","stylers":[{"color":"#5d697d"}]},
+{"featureType":"road.arterial","elementType":"labels.icon","stylers":[{"visibility":"off"}]}
 ]"""
 
     /** Buat sesi ubin peta Google (gratis, berlaku sekitar 2 minggu). Coba dengan lalu lintas dulu. */

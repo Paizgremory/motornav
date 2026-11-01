@@ -386,13 +386,23 @@ object Core {
         }
     }
 
+    /** Cari kualitas JPEG tertinggi yang masih muat di batas buffer firmware (12 KB). */
     private fun encode(b: Bitmap): ByteArray? {
-        var q = 60
-        while (q >= 15) {
+        val limit = 11500
+        var lo = 20
+        var hi = 92
+        var best: ByteArray? = null
+        while (lo <= hi) {
+            val q = (lo + hi) / 2
             val bo = ByteArrayOutputStream(12000)
             b.compress(Bitmap.CompressFormat.JPEG, q, bo)
-            if (bo.size() <= 11500) return bo.toByteArray()
-            q -= 10
+            if (bo.size() <= limit) { best = bo.toByteArray(); lo = q + 1 } else hi = q - 1
+        }
+        if (best != null) return best
+        for (q in intArrayOf(15, 10)) {
+            val bo = ByteArrayOutputStream(12000)
+            b.compress(Bitmap.CompressFormat.JPEG, q, bo)
+            if (bo.size() <= limit) return bo.toByteArray()
         }
         return null
     }

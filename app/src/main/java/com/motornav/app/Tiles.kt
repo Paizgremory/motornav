@@ -15,12 +15,12 @@ class Tiles(ctx: Context, private val onLoaded: () -> Unit) {
     private val app = ctx.applicationContext
     private val dir = File(ctx.cacheDir, "tiles").apply { mkdirs() }
     private val mem = object : LinkedHashMap<String, Bitmap>(64, 0.75f, true) {
-        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Bitmap>?): Boolean = size > 40
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Bitmap>?): Boolean = size > 30
     }
     private val pending = HashSet<String>()
     private val failedAt = HashMap<String, Long>()
     private val pool = Executors.newFixedThreadPool(3)
-    private val opts = BitmapFactory.Options().apply { inPreferredConfig = Bitmap.Config.RGB_565 }
+    private val opts = BitmapFactory.Options().apply { inPreferredConfig = Bitmap.Config.ARGB_8888 }
 
     private val gLock = Any()
     @Volatile private var gSession = ""

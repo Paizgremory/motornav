@@ -24,7 +24,12 @@ class NavState(
 /** Menggambar frame 240x240 untuk layar bulat ESP32: peta, rute, banner belokan, kecepatan, ETA. */
 class Renderer(private val tiles: Tiles) {
     val bmp: Bitmap = Bitmap.createBitmap(240, 240, Bitmap.Config.ARGB_8888)
-    private val cv = Canvas(bmp)
+    // Digambar di kanvas 480x480 (skala 2x, koordinat tetap 240), lalu diperkecil: tepi halus dan ubin Google 2x tampil 1:1.
+    private val big: Bitmap = Bitmap.createBitmap(480, 480, Bitmap.Config.ARGB_8888)
+    private val cv = Canvas(big)
+    private val outCv = Canvas(bmp)
+    private val downPaint = Paint(Paint.FILTER_BITMAP_FLAG)
+    private val dst = Rect(0, 0, 240, 240)
     private val p = Paint(Paint.ANTI_ALIAS_FLAG)
     private val tp = TextPaint(Paint.ANTI_ALIAS_FLAG).apply { typeface = Typeface.DEFAULT_BOLD }
     // OSM terang -> gelap: balik warna lalu putar hue 180 derajat (air tetap kebiruan), sedikit diredupkan
@@ -56,6 +61,8 @@ class Renderer(private val tiles: Tiles) {
 
     @Synchronized
     fun render(s: NavState): Bitmap {
+        cv.save()
+        cv.scale(2f, 2f)
         cv.drawColor(cBg)
         val z = s.zoom
         val px = Geo.worldX(s.lon, z)
@@ -116,6 +123,8 @@ class Renderer(private val tiles: Tiles) {
         drawBanner(s)
         drawBottom(s)
         if (tiles.googleActive()) text("Google", 120f, 233f, 8f, Color.rgb(170, 175, 185), Paint.Align.CENTER)
+        cv.restore()
+        outCv.drawBitmap(big, null, dst, downPaint)
         return bmp
     }
 
