@@ -1,4 +1,4 @@
-# MotorNav (aplikasi Android untuk layar motor)
+# Nav160 (aplikasi Android untuk layar motor)
 
 Aplikasi ini mengurus navigasi sendiri: cari tujuan, buat rute (OSRM), gambar peta gelap + garis rute + banner belokan +
 kecepatan + ETA di HP, lalu kirim sebagai gambar 240x240 lewat BLE ke ESP32 "Motor Nav".
@@ -6,7 +6,7 @@ Tidak perlu aplikasi lain.
 
 ## 1. Flash firmware baru
 Pakai folder `motor_nav_esp32_v22` (v22.26) dari zip firmware. Board: ESP32 biasa. PARTISI BERUBAH di v22.26 (program 1,25 MB, wallpaper 2,19 MB, animasi boot 512 KB):
-flash ulang penuh (file .merged.bin di alamat 0x0) dengan partitions.csv yang ikut, lalu kirim ulang wallpaper dari aplikasi. Firmware v22.22 tidak lagi mendukung Chronos: semua data lewat aplikasi MotorNav.
+flash ulang penuh (file .merged.bin di alamat 0x0) dengan partitions.csv yang ikut, lalu kirim ulang wallpaper dari aplikasi. Firmware v22.22 tidak lagi mendukung Chronos: semua data lewat aplikasi Nav160.
 
 ## 2. Bangun APK (tanpa Android Studio, lewat GitHub Actions)
 Di Termux:
@@ -22,16 +22,16 @@ Di Termux:
 
 - Buat dulu repo kosong `motornav` di github.com.
 - Saat diminta password, pakai Personal Access Token (centang scope `repo` dan `workflow`).
-- Buka tab **Actions** di repo, tunggu "Build APK" hijau, lalu unduh artifact `MotorNav-debug-apk` (isinya app-debug.apk).
+- Buka tab **Actions** di repo, tunggu "Build APK" hijau, lalu unduh artifact `Nav160-debug-apk` (isinya app-debug.apk).
 - Pasang APK (izinkan "pasang dari sumber tidak dikenal").
 
 Alternatif: buka folder ini di Android Studio di komputer, lalu Build > Build APK.
 
 ## 3. Pakai
 1. Nyalakan ESP32. Pengaturan TAMPILAN NAV tidak perlu diubah: frame dari aplikasi otomatis tampil penuh.
-2. Buka MotorNav, izinkan Lokasi dan Bluetooth, tekan **Sambungkan ESP32**.
+2. Buka Nav160, izinkan Lokasi dan Bluetooth, tekan **Sambungkan ESP32**.
 3. Tulis tujuan (nama tempat, `lat,lon`, atau tempel link Google Maps) lalu **Cari tujuan** dan pilih hasilnya.
-4. Aplikasi tetap jalan saat layar HP mati (ada notifikasi "MotorNav aktif"). Matikan penghematan baterai untuk aplikasi ini.
+4. Aplikasi tetap jalan saat layar HP mati (ada notifikasi "Nav160 aktif"). Matikan penghematan baterai untuk aplikasi ini.
 
 ## Animasi boot
 Menu Layar > "Animasi boot": pilih video, Kirim. Video diputar sekali tiap ESP32 dinyalakan (sentuh sensor = lewati). "Hapus animasi boot" mengosongkan slot.
@@ -53,7 +53,7 @@ Layar GC9A01 fisiknya 240x240, jadi detail maksimum ditentukan oleh ukuran itu.
 
 ## 6. Notifikasi & telepon di layar motor (v3.8 + firmware v22.15)
 Butuh firmware v22.15. Di bagian "Notifikasi & telepon di layar motor":
-1. **Beri akses notifikasi**: aktifkan MotorNav di daftar. Android 13+ bila pilihan abu-abu: Info aplikasi MotorNav > menu titik tiga > *Izinkan setelan terbatas*, lalu ulangi.
+1. **Beri akses notifikasi**: aktifkan Nav160 di daftar. Android 13+ bila pilihan abu-abu: Info aplikasi Nav160 > menu titik tiga > *Izinkan setelan terbatas*, lalu ulangi.
 2. **Izin telepon**: izinkan Telepon, Log panggilan (untuk nomor penelepon), dan Kontak (untuk nama).
 3. Sambungkan ESP32, lalu coba **Tes notifikasi** dan **Tes telepon**.
 - Layar notifikasi: logo asli aplikasi, nama aplikasi, pengirim (huruf besar), isi pesan huruf ukuran 2 yang berganti halaman otomatis; pesan panjang tampil lebih lama (maks sekitar 26 dtk). Sentuh sensor untuk menutup.
@@ -67,7 +67,7 @@ Butuh firmware v22.15. Di bagian "Notifikasi & telepon di layar motor":
 - Telepon biasa terbaca dari status telepon; panggilan WhatsApp/Telegram terbaca dari notifikasinya. Layar telepon menutup otomatis saat diangkat/ditolak/selesai.
 
 ## 7. Animasi musik di layar standby (v3.16 + firmware v22.24)
-Saat lagu diputar di HP (Spotify, YouTube Music, dll.), MotorNav mengirim ke ESP32:
+Saat lagu diputar di HP (Spotify, YouTube Music, dll.), Nav160 mengirim ke ESP32:
 - **Judul, artis, status** (butuh Akses notifikasi aktif, sama seperti bagian 6).
 - **Gambar sampul** 64x64, digambar semi-transparan di atas wallpaper (standby foto/video) dan hilang saat lagu dijeda/berganti.
 - **Visualizer asli**: spektrum suara HP (16 band) dikirim ~20x/dtk, batang pelangi mengikuti musik. Butuh izin **Rekam audio**

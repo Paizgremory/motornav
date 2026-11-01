@@ -19,5 +19,5 @@ jobs:
         run: gradle assembleDebug --no-daemon
       - uses: actions/upload-artifact@v4
         with:
-          name: MotorNav-debug-apk
+          name: Nav160-debug-apk
           path: app/build/outputs/apk/debug/app-debug.apk

@@ -5,6 +5,8 @@ import android.app.Activity
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
+import android.graphics.Outline
+import android.graphics.Typeface
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -15,6 +17,7 @@ import android.app.AlertDialog
 import android.text.InputType
 import android.view.Gravity
 import android.view.View
+import android.view.ViewOutlineProvider
 import android.widget.*
 import java.util.concurrent.Executors
 
@@ -59,17 +62,48 @@ class MainActivity : Activity(), Core.Listener {
 
     private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
 
-    private fun button(t: String, onClick: () -> Unit): Button = Button(this).apply {
+    private val ACC = 0xFFFF9F1C.toInt()
+
+    private fun button(t: String, primary: Boolean = false, onClick: () -> Unit): Button = Button(this).apply {
         text = t
         isAllCaps = false
+        if (primary) {
+            setBackgroundResource(R.drawable.btn_primary)
+            setTextColor(resources.getColorStateList(R.color.btn_text_primary, theme))
+        }
         setOnClickListener { onClick() }
-        layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+        layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply { setMargins(dp(3), dp(3), dp(3), dp(3)) }
     }
 
     private fun row(vararg v: View): LinearLayout = LinearLayout(this).apply {
         orientation = LinearLayout.HORIZONTAL
         v.forEach { addView(it) }
     }
+
+    /** Judul bagian: aksen oranye, tebal. */
+    private fun heading(t: String): TextView = TextView(this).apply {
+        text = t
+        textSize = 18f
+        typeface = Typeface.DEFAULT_BOLD
+        setTextColor(ACC)
+        setPadding(0, dp(22), 0, dp(6))
+    }
+
+    /** Potong tampilan jadi lingkaran, sesuai layar bulat GC9A01. */
+    private fun circle(v: View) {
+        v.clipToOutline = true
+        v.outlineProvider = object : ViewOutlineProvider() {
+            override fun getOutline(view: View, outline: Outline) { outline.setOval(0, 0, view.width, view.height) }
+        }
+    }
+
+    private fun styleInput(e: EditText) {
+        e.setBackgroundResource(R.drawable.input_bg)
+        e.setPadding(dp(14), dp(12), dp(14), dp(12))
+    }
+
+    private fun inputParams() = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
+        .apply { setMargins(0, dp(8), 0, dp(4)) }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -80,23 +114,50 @@ class MainActivity : Activity(), Core.Listener {
             setPadding(dp(14), dp(14), dp(14), dp(24))
         }
         val top = root
-        root.addView(TextView(this).apply { text = "MotorNav"; textSize = 24f })
-        root.addView(TextView(this).apply {
-            text = "Navigasi ke layar motor"
-            textSize = 13f
+        root.addView(LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(0, dp(4), 0, dp(10))
+            addView(ImageView(context).apply {
+                setImageResource(R.drawable.ic_logo)
+                layoutParams = LinearLayout.LayoutParams(dp(54), dp(54))
+            })
+            addView(LinearLayout(context).apply {
+                orientation = LinearLayout.VERTICAL
+                setPadding(dp(12), 0, 0, 0)
+                addView(TextView(context).apply {
+                    text = "Nav160"
+                    textSize = 27f
+                    typeface = Typeface.DEFAULT_BOLD
+                    setTextColor(0xFFF2F5FA.toInt())
+                })
+                addView(TextView(context).apply {
+                    text = "Navigasi ke layar motor"
+                    textSize = 13f
+                    setTextColor(0xFF9AA6B6.toInt())
+                })
+            })
         })
 
         ivPreview = ImageView(this).apply {
             layoutParams = LinearLayout.LayoutParams(dp(220), dp(220)).apply { gravity = Gravity.CENTER_HORIZONTAL; topMargin = dp(10) }
             setBackgroundColor(0xFF000000.toInt())
         }
+        circle(ivPreview)
         root.addView(ivPreview)
 
-        tvStatus = TextView(this).apply { text = "Belum jalan."; textSize = 13f; setPadding(0, dp(10), 0, dp(6)) }
-        root.addView(tvStatus)
+        tvStatus = TextView(this).apply {
+            text = "Belum jalan."
+            textSize = 13f
+            setTextColor(0xFFB8C2D0.toInt())
+            setBackgroundResource(R.drawable.card_bg)
+            setPadding(dp(14), dp(12), dp(14), dp(12))
+        }
+        root.addView(tvStatus, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
+            .apply { setMargins(0, dp(14), 0, dp(8)) })
 
         root.addView(row(
-            button("1. Sambungkan ESP32") { go() },
+            button("1. Sambungkan ESP32", true) { go() },
             button("Putuskan") { Core.ble.disconnect() }
         ))
 
@@ -107,7 +168,11 @@ class MainActivity : Activity(), Core.Listener {
         val tabBtns = ArrayList<Button>()
         fun showTab(i: Int) {
             pages.forEachIndexed { k, pg -> pg.visibility = if (k == i) View.VISIBLE else View.GONE }
-            tabBtns.forEachIndexed { k, b -> b.alpha = if (k == i) 1f else 0.45f }
+            tabBtns.forEachIndexed { k, b ->
+                b.alpha = 1f
+                b.setBackgroundResource(if (k == i) R.drawable.btn_primary else R.drawable.btn_bg)
+                b.setTextColor(resources.getColorStateList(if (k == i) R.color.btn_text_primary else R.color.btn_text, theme))
+            }
         }
         listOf("Navigasi", "Musik", "Layar", "Notifikasi").forEachIndexed { k, n ->
             tabBtns.add(button(n) { showTab(k) }.apply { textSize = 12f })
@@ -124,7 +189,8 @@ class MainActivity : Activity(), Core.Listener {
             setSingleLine(true)
             setText(GKey.get(applicationContext))
         }
-        root.addView(etKey)
+        styleInput(etKey)
+        root.addView(etKey, inputParams())
         root.addView(row(button("Simpan API key") {
             GKey.set(applicationContext, etKey.text.toString())
             Toast.makeText(this, if (etKey.text.isBlank()) "Key dihapus: pakai OSRM." else "Key disimpan: pakai Google.", Toast.LENGTH_SHORT).show()
@@ -145,9 +211,10 @@ class MainActivity : Activity(), Core.Listener {
             inputType = InputType.TYPE_CLASS_TEXT
             setSingleLine(true)
         }
-        root.addView(etSearch)
+        styleInput(etSearch)
+        root.addView(etSearch, inputParams())
         root.addView(row(
-            button("2. Cari tujuan") { doSearch() },
+            button("2. Cari tujuan", true) { doSearch() },
             button("Peta saja") { startIfNeeded(); Core.startMapOnly() }
         ))
         results = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
@@ -169,10 +236,10 @@ class MainActivity : Activity(), Core.Listener {
         }))
         root = pageNotif
         // ---------- Notifikasi & telepon ke layar motor ----------
-        root.addView(TextView(this).apply { text = "Notifikasi & telepon di layar motor"; textSize = 18f; setPadding(0, dp(18), 0, dp(4)) })
+        root.addView(heading("Notifikasi & telepon di layar motor"))
         root.addView(TextView(this).apply {
             text = "Notifikasi HP tampil di layar ESP32 lengkap dengan logo aplikasi, nama pengirim, dan isi pesan yang bergulir otomatis bila panjang. " +
-                "Telepon masuk tampil dengan nama kontak. Butuh firmware v22.15 dan MotorNav tersambung ke ESP32."
+                "Telepon masuk tampil dengan nama kontak. Butuh firmware v22.15 dan Nav160 tersambung ke ESP32."
             textSize = 12f
         })
         tvNotif = TextView(this).apply { textSize = 13f; setPadding(0, dp(6), 0, dp(4)) }
@@ -219,7 +286,7 @@ class MainActivity : Activity(), Core.Listener {
         root = pageScreen
         buildScreenPage(pageScreen)
         // ---------- Wallpaper layar standby (foto / video, lewat Bluetooth) ----------
-        root.addView(TextView(this).apply { text = "Tambah wallpaper baru (foto / video)"; textSize = 18f; setPadding(0, dp(18), 0, dp(4)) })
+        root.addView(heading("Tambah wallpaper baru (foto / video)"))
         root.addView(TextView(this).apply {
             text = "Pilih foto ATAU video, atur, lalu Kirim (otomatis masuk Koleksi di atas) atau Simpan saja. Layar fisik 240x240: gambar dibaca dari sumber asli, diperkecil halus, dipertajam; foto diberi dithering agar gradasi tidak berpita."
             textSize = 12f
@@ -228,6 +295,7 @@ class MainActivity : Activity(), Core.Listener {
             layoutParams = LinearLayout.LayoutParams(dp(220), dp(220)).apply { gravity = Gravity.CENTER_HORIZONTAL; topMargin = dp(8) }
             setBackgroundColor(0xFF000000.toInt())
         }
+        circle(ivWp)
         root.addView(ivWp)
         fun seek(label: String, max: Int, init: Int, parent: LinearLayout): SeekBar {
             val tv = TextView(this).apply { text = label; textSize = 12f }
@@ -261,7 +329,7 @@ class MainActivity : Activity(), Core.Listener {
         root.addView(tvWpInfo)
         tvWp = TextView(this).apply { text = "Belum ada foto/video dipilih."; textSize = 13f; setPadding(0, dp(6), 0, dp(4)) }
         root.addView(tvWp)
-        btnWpSend = button("Kirim ke ESP32") { wpSend(true) }
+        btnWpSend = button("Kirim ke ESP32", true) { wpSend(true) }
         btnWpSave = button("Simpan saja") { wpSend(false) }
         btnWpCancel = button("Batal") { wpCancel = true; Core.ble.cancelUpload = true }
         btnWpCancel.isEnabled = false
@@ -270,7 +338,7 @@ class MainActivity : Activity(), Core.Listener {
         root.addView(row(button("Hapus wallpaper (kembali bawaan)") { wpClear() }))
 
         // ---------- Animasi boot: video yang diputar sekali tiap ESP32 dinyalakan (butuh firmware v22.25) ----------
-        root.addView(TextView(this).apply { text = "Animasi boot (video saat dinyalakan)"; textSize = 18f; setPadding(0, dp(24), 0, dp(4)) })
+        root.addView(heading("Animasi boot (video saat dinyalakan)"))
         root.addView(TextView(this).apply {
             text = "Pilih video lalu Kirim. Video diputar sekali di layar motor setiap kali ESP32 dinyalakan, sebelum masuk tampilan biasa " +
                 "(sentuh sensor = lewati). Bagian tengah video dipotong persegi. Slot sekitar 0,5 MB: video 2-4 dtk paling pas, yang lebih panjang " +
@@ -281,10 +349,11 @@ class MainActivity : Activity(), Core.Listener {
             layoutParams = LinearLayout.LayoutParams(dp(160), dp(160)).apply { gravity = Gravity.CENTER_HORIZONTAL; topMargin = dp(8) }
             setBackgroundColor(0xFF000000.toInt())
         }
+        circle(ivBoot)
         root.addView(ivBoot)
         tvBoot = TextView(this).apply { text = "Belum ada video dipilih."; textSize = 13f; setPadding(0, dp(6), 0, dp(4)) }
         root.addView(tvBoot)
-        btnBootSend = button("Kirim animasi boot") { bootSend() }
+        btnBootSend = button("Kirim animasi boot", true) { bootSend() }
         btnBootSend.isEnabled = false
         root.addView(row(
             button("Pilih video") { pickBootVideo() }, btnBootSend,
@@ -317,7 +386,7 @@ class MainActivity : Activity(), Core.Listener {
     private fun fmt(ms: Long): String { val s = ms / 1000; return "%d:%02d".format(s / 60, s % 60) }
 
     private fun title(p: LinearLayout, t: String) =
-        p.addView(TextView(this).apply { text = t; textSize = 17f; setPadding(0, dp(14), 0, dp(4)) })
+        p.addView(heading(t).apply { textSize = 17f; setPadding(0, dp(16), 0, dp(4)) })
 
     private fun buildCfg(p: LinearLayout, page: Int) {
         Cfg.items.forEachIndexed { i, item ->
@@ -903,7 +972,7 @@ class MainActivity : Activity(), Core.Listener {
         tvNotif.text = (if (l) "Akses notifikasi: AKTIF\n" else "Akses notifikasi: belum diberikan (tekan tombol 1)\n") +
             (if (ph) "Izin telepon: AKTIF" else "Izin telepon: belum lengkap (tekan tombol 2)") +
             "\n" + Music.vizStatus +
-            (if (!l && Build.VERSION.SDK_INT >= 33) "\nCatatan Android 13+: bila pilihan MotorNav abu-abu, buka Info aplikasi MotorNav > menu titik tiga > Izinkan setelan terbatas, lalu ulangi." else "")
+            (if (!l && Build.VERSION.SDK_INT >= 33) "\nCatatan Android 13+: bila pilihan Nav160 abu-abu, buka Info aplikasi Nav160 > menu titik tiga > Izinkan setelan terbatas, lalu ulangi." else "")
     }
 
     private fun askPhonePerms() {
