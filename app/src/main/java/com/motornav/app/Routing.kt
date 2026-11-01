@@ -27,9 +27,12 @@ object Net {
     fun get(url: String, timeoutMs: Int = 10000): String = String(getBytes(url, timeoutMs), Charsets.UTF_8)
 
     /** Ikuti pengalihan (termasuk http<->https) sampai 8 kali; kembalikan URL akhir dan isi halaman (maks 600 KB). */
-    fun fetchFollow(url: String): Pair<String, String> {
+    const val UA_MOBILE = "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Mobile Safari/537.36"
+    const val UA_DESKTOP = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36"
+    const val UA_CURL = "curl/8.5.0"
+
+    fun fetchFollow(url: String, ua: String = UA_MOBILE): Pair<String, String> {
         var u = url
-        val ua = "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Mobile Safari/537.36"
         for (i in 0 until 8) {
             val c = URL(u).openConnection() as HttpURLConnection
             c.instanceFollowRedirects = false
@@ -243,20 +246,27 @@ object Geocode {
     /** Cari URL Google Maps lengkap di dalam isi halaman (mis. dalam skrip pengalihan). */
     private fun mapsUrlsIn(body: String): List<String> {
         val t = body.replace("\\u003d", "=").replace("\\u0026", "&").replace("\\/", "/").replace("&amp;", "&")
-        return Regex("https?://(?:www\\.)?google\\.[a-z.]+/maps/[^\"'\\s<>\\\\]+").findAll(t).map { it.value }.distinct().take(5).toList()
+            .replace("\\x3d", "=").replace("\\x26", "&").replace("\\x2F", "/").replace("\\x2f", "/")
+        return Regex("https?://(?:www\\.|maps\\.)?google\\.[a-z.]+/maps[^\"'\\s<>\\\\]+").findAll(t).map { it.value }.distinct().take(5).toList()
     }
 
     /** Ambil koordinat dari tautan Maps: dari URL akhir dulu, lalu dari isi halamannya. */
     fun fromLink(link: String): Pair<Place?, String> {
-        var (fin, body) = Net.fetchFollow(link)
-        findCoord(fin)?.let { return Pair(it, fin) }
-        if (body.isNotEmpty()) findCoord(body)?.let { return Pair(it, fin) }
-        // Halaman perantara (tautan pendek yang tidak dialihkan): ambil URL Maps lengkap dari isinya
-        for (u in mapsUrlsIn(body)) {
-            findCoord(u)?.let { return Pair(it, u) }
-            if (u.contains("/maps/place/")) { fin = u; break }
+        var lastFin = link
+        // Coba beberapa User-Agent: tautan pendek Google kadang tidak dialihkan untuk satu jenis klien (mis. hanya menampilkan halaman perantara).
+        for (ua in listOf(Net.UA_MOBILE, Net.UA_CURL, Net.UA_DESKTOP)) {
+            var (fin, body) = try { Net.fetchFollow(link, ua) } catch (e: Exception) { continue }
+            findCoord(fin)?.let { return Pair(it, fin) }
+            if (body.isNotEmpty()) findCoord(body)?.let { return Pair(it, fin) }
+            // Halaman perantara (tautan pendek yang tidak dialihkan): ambil URL Maps lengkap dari isinya
+            for (u in mapsUrlsIn(body)) {
+                findCoord(u)?.let { return Pair(it, u) }
+                if (u.contains("/maps/place/")) { fin = u; break }
+            }
+            if (fin != link) return Pair(null, fin)       // sudah dialihkan ke alamat panjang (tanpa koordinat): lanjut cari lewat nama
+            lastFin = fin
         }
-        return Pair(null, fin)
+        return Pair(null, lastFin)
     }
 
     fun search(q: String): List<Place> {
