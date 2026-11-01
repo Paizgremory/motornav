@@ -145,7 +145,7 @@ class MainActivity : Activity(), Core.Listener {
             try {
                 val p = resolveShared(txt)
                 if (p == null) {
-                    runOnUiThread { Toast.makeText(this, "Tujuan tidak ditemukan di data yang dibagikan.", Toast.LENGTH_LONG).show() }
+                    runOnUiThread { Toast.makeText(this, "Tujuan tidak ditemukan. Isi Google API key supaya pencarian nama bisa jalan. Tautan akhir: ${lastLinkInfo.take(120)}", Toast.LENGTH_LONG).show() }
                     return@execute
                 }
                 var waited = 0
@@ -163,16 +163,26 @@ class MainActivity : Activity(), Core.Listener {
         val nameLines = txt.lineSequence().map { it.trim() }.filter { it.isNotEmpty() && !it.startsWith("http") }.toList()
         var p: Place? = null
         if (url != null) {
-            p = try { Geocode.search(url).firstOrNull() } catch (e: Exception) { null }
+            val r = try { Geocode.fromLink(url) } catch (e: Exception) { Pair(null, "galat: ${e.message}") }
+            p = r.first
+            lastLinkInfo = r.second
         } else p = Geocode.parseCoord(txt)
         if (p != null) {
             val nm = nameLines.firstOrNull()
             return if (nm != null && p.name.startsWith("Titik")) Place(nm, p.lat, p.lon) else p
         }
-        if (nameLines.isNotEmpty())   // tautan tanpa koordinat: cari lewat nama + alamat
-            return Engine.search(applicationContext, nameLines.joinToString(" "), Core.lat, Core.lon).firstOrNull()
+        // Tautan tanpa koordinat: cari lewat nama + alamat, lalu nama saja
+        if (nameLines.isNotEmpty()) {
+            val tries = listOf(nameLines.joinToString(" "), nameLines.first()).distinct()
+            for (q in tries) {
+                val l = try { Engine.search(applicationContext, q, Core.lat, Core.lon) } catch (e: Exception) { emptyList() }
+                if (l.isNotEmpty()) return l.first()
+            }
+        }
         return null
     }
+
+    private var lastLinkInfo = ""
 
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)

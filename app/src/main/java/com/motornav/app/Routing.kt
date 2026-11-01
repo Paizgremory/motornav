@@ -26,6 +26,41 @@ object Net {
 
     fun get(url: String, timeoutMs: Int = 10000): String = String(getBytes(url, timeoutMs), Charsets.UTF_8)
 
+    /** Ikuti pengalihan (termasuk http<->https) sampai 8 kali; kembalikan URL akhir dan isi halaman (maks 600 KB). */
+    fun fetchFollow(url: String): Pair<String, String> {
+        var u = url
+        val ua = "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Mobile Safari/537.36"
+        for (i in 0 until 8) {
+            val c = URL(u).openConnection() as HttpURLConnection
+            c.instanceFollowRedirects = false
+            c.connectTimeout = 10000
+            c.readTimeout = 10000
+            c.setRequestProperty("User-Agent", ua)
+            c.setRequestProperty("Accept-Language", "id-ID,id;q=0.9,en;q=0.8")
+            try {
+                val code = c.responseCode
+                if (code in 300..399) {
+                    val loc = c.getHeaderField("Location") ?: return Pair(u, "")
+                    u = URL(URL(u), loc).toString()
+                    continue
+                }
+                val body = try {
+                    c.inputStream.use { s ->
+                        val buf = java.io.ByteArrayOutputStream()
+                        val tmp = ByteArray(8192)
+                        var n = s.read(tmp)
+                        while (n > 0 && buf.size() < 600_000) { buf.write(tmp, 0, n); n = s.read(tmp) }
+                        String(buf.toByteArray(), Charsets.UTF_8)
+                    }
+                } catch (e: Exception) { "" }
+                return Pair(u, body)
+            } finally {
+                c.disconnect()
+            }
+        }
+        return Pair(u, "")
+    }
+
     /** Mengikuti pengalihan (mis. tautan pendek Google Maps) dan mengembalikan URL akhir. */
     fun finalUrl(url: String): String {
         val c = URL(url).openConnection() as HttpURLConnection
@@ -181,12 +216,43 @@ object Geocode {
         return null
     }
 
+    private val RX_BODY = listOf(
+        Regex("""@(-?\d+\.\d+),(-?\d+\.\d+)"""),
+        Regex("""!3d(-?\d+\.\d+)!4d(-?\d+\.\d+)"""),
+        Regex("""center=(-?\d+\.\d+)(?:,|%2C|%2c)(-?\d+\.\d+)"""),
+        Regex("""\[null,null,(-?\d+\.\d+),(-?\d+\.\d+)\]"""),
+        Regex("""ll=(-?\d+\.\d+)(?:,|%2C|%2c)(-?\d+\.\d+)"""),
+        Regex("""(?:q|query|destination)=(-?\d+\.\d+)(?:,|%2C|%2c)(-?\d+\.\d+)""")
+    )
+
+    private fun findCoord(s: String): Place? {
+        val t = try { java.net.URLDecoder.decode(s.replace("+", "%2B"), "UTF-8") } catch (e: Exception) { s }
+        for (src in listOf(s, t)) {
+            parseCoord(src)?.let { return it }
+            for (rx in RX_BODY) {
+                val m = rx.find(src) ?: continue
+                val la = m.groupValues[1].toDoubleOrNull() ?: continue
+                val lo = m.groupValues[2].toDoubleOrNull() ?: continue
+                if (abs(la) <= 90 && abs(lo) <= 180 && (la != 0.0 || lo != 0.0))
+                    return Place(String.format(Locale.US, "Titik %.5f, %.5f", la, lo), la, lo)
+            }
+        }
+        return null
+    }
+
+    /** Ambil koordinat dari tautan Maps: dari URL akhir dulu, lalu dari isi halamannya. */
+    fun fromLink(link: String): Pair<Place?, String> {
+        val (fin, body) = Net.fetchFollow(link)
+        findCoord(fin)?.let { return Pair(it, fin) }
+        if (body.isNotEmpty()) findCoord(body)?.let { return Pair(it, fin) }
+        return Pair(null, fin)
+    }
+
     fun search(q: String): List<Place> {
         val t = q.trim()
         parseCoord(t)?.let { return listOf(it) }
         if (t.startsWith("http")) {
-            val u = Net.finalUrl(t)
-            val p = parseCoord(u) ?: throw RuntimeException("Koordinat tidak ditemukan di tautan")
+            val p = fromLink(t).first ?: throw RuntimeException("Koordinat tidak ditemukan di tautan")
             return listOf(Place("Titik dari tautan", p.lat, p.lon))
         }
         val url = "https://nominatim.openstreetmap.org/search?format=jsonv2&limit=6&countrycodes=id&q=" +
