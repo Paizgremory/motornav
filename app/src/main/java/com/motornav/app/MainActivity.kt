@@ -78,7 +78,7 @@ class MainActivity : Activity(), Core.Listener {
         root.addView(CheckBox(this).apply {
             text = "Suara petunjuk belokan"
             isChecked = Voice.enabled
-            setOnCheckedChangeListener { _, on -> Voice.setEnabled(on) }
+            setOnCheckedChangeListener { _, on -> Voice.setOn(on) }
         })
         root.addView(row(button("Tes suara") {
             if (!Voice.langOk) Toast.makeText(this, "Suara bahasa Indonesia belum ada. Pasang di Pengaturan > Teks ke ucapan.", Toast.LENGTH_LONG).show()

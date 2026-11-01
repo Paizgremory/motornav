@@ -46,7 +46,7 @@ object Voice {
         }
     }
 
-    fun setEnabled(on: Boolean) {
+    fun setOn(on: Boolean) {
         enabled = on
         app?.getSharedPreferences(PREF, Context.MODE_PRIVATE)?.edit()?.putBoolean(K, on)?.apply()
         if (!on) tts?.stop()
