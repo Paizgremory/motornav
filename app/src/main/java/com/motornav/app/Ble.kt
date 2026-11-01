@@ -11,6 +11,7 @@ import android.os.Looper
 import java.util.UUID
 import java.util.concurrent.Semaphore
 import java.util.concurrent.TimeUnit
+import java.util.zip.CRC32
 
 /** Koneksi BLE ke ESP32 "Motor Nav" (layanan peta 4d4e0001, karakteristik 4d4e0002). */
 @SuppressLint("MissingPermission")
@@ -29,6 +30,11 @@ class Ble(private val ctx: Context, private val onMsg: (String) -> Unit) {
     private var chr: BluetoothGattCharacteristic? = null
     private var scanner: BluetoothLeScanner? = null
     private val sem = Semaphore(0)
+    private val rsem = Semaphore(0)
+    private val txLock = Any()
+    @Volatile private var lastWriteOk = true
+    @Volatile private var lastStatus = -1
+    @Volatile var uploading = false
 
     @Volatile var ready = false
     @Volatile var chunk = 15
@@ -170,11 +176,18 @@ class Ble(private val ctx: Context, private val onMsg: (String) -> Unit) {
         }
 
         override fun onCharacteristicWrite(g: BluetoothGatt, c: BluetoothGattCharacteristic, status: Int) {
+            lastWriteOk = status == BluetoothGatt.GATT_SUCCESS
             sem.release()
+        }
+
+        override fun onCharacteristicRead(g: BluetoothGatt, c: BluetoothGattCharacteristic, status: Int) {
+            val v = c.value
+            lastStatus = if (status == BluetoothGatt.GATT_SUCCESS && v != null && v.isNotEmpty()) v[0].toInt() and 255 else -1
+            rsem.release()
         }
     }
 
-    private fun write(p: ByteArray): Boolean {
+    private fun write(p: ByteArray, strict: Boolean = false): Boolean {
         val g = gatt ?: return false
         val c = chr ?: return false
         sem.drainPermits()
@@ -185,15 +198,22 @@ class Ble(private val ctx: Context, private val onMsg: (String) -> Unit) {
             Thread.sleep(10)
             c.value = p
         }
-        return sem.tryAcquire(1500, TimeUnit.MILLISECONDS)
+        return sem.tryAcquire(1500, TimeUnit.MILLISECONDS) && (!strict || lastWriteOk)
     }
 
     /** Paket kontrol: [0xFF][cmd][...]. */
-    fun sendControl(p: ByteArray): Boolean = ready && write(p)
+    fun sendControl(p: ByteArray): Boolean {
+        if (!ready || uploading) return false
+        return synchronized(txLock) { if (uploading) false else write(p) }
+    }
 
     /** Kirim satu frame JPEG: tiap paket = [id][offset LE16][total LE16][data]. */
     fun sendFrame(data: ByteArray): Boolean {
-        if (!ready) return false
+        if (!ready || uploading) return false
+        return synchronized(txLock) { if (uploading) false else sendFrameLocked(data) }
+    }
+
+    private fun sendFrameLocked(data: ByteArray): Boolean {
         fid = (fid + 1) % 255
         val tot = data.size
         var off = 0
@@ -211,5 +231,79 @@ class Ble(private val ctx: Context, private val onMsg: (String) -> Unit) {
         }
         framesSent++
         return true
+    }
+
+    // ---------- upload wallpaper (foto 240x240 RGB565, 115200 byte) ----------
+    private fun readStatus(): Int {
+        val g = gatt ?: return -1
+        val c = chr ?: return -1
+        rsem.drainPermits()
+        lastStatus = -1
+        if (!g.readCharacteristic(c)) return -1
+        if (!rsem.tryAcquire(1500, TimeUnit.MILLISECONDS)) return -1
+        return lastStatus
+    }
+
+    private fun le32(v: Long) = byteArrayOf(v.toByte(), (v shr 8).toByte(), (v shr 16).toByte(), (v shr 24).toByte())
+
+    /** Kirim foto ke slot wallpaper ESP32. Mengembalikan null kalau sukses, atau teks galat. progress: 0..100. */
+    fun uploadWallpaper(data: ByteArray, progress: (Int) -> Unit): String? {
+        if (!ready) return "ESP32 belum tersambung"
+        if (data.size != 115200) return "Ukuran data salah"
+        val c = chr ?: return "ESP32 belum tersambung"
+        uploading = true                                   // hentikan kiriman frame peta selama upload
+        try {
+            return synchronized(txLock) {
+                var err: String? = null
+                c.writeType = BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT   // pakai konfirmasi: tak ada paket hilang
+                try {
+                    for (attempt in 1..3) {
+                        err = uploadOnce(data, progress)
+                        if (err == null || !ready) break
+                        progress(0)
+                    }
+                } finally {
+                    c.writeType = BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE
+                }
+                err
+            }
+        } finally {
+            uploading = false
+        }
+    }
+
+    private fun uploadOnce(data: ByteArray, progress: (Int) -> Unit): String? {
+        if (!write(byteArrayOf(-1, 0x10) + le32(data.size.toLong()), true)) return "Gagal memulai upload (BLE)"
+        var t = System.currentTimeMillis()
+        while (true) {
+            val st = readStatus()
+            if (st == 2) break
+            if (st == 5) return "ESP32 menolak upload"
+            if (System.currentTimeMillis() - t > 15000) return "ESP32 tidak membalas. Sudah flash firmware v22.13?"
+            Thread.sleep(250)
+        }
+        val n = maxOf(8, chunk - 1)
+        var off = 0
+        while (off < data.size) {
+            val k = minOf(n, data.size - off)
+            val pk = ByteArray(6 + k)
+            pk[0] = -1
+            pk[1] = 0x11
+            System.arraycopy(le32(off.toLong()), 0, pk, 2, 4)
+            System.arraycopy(data, off, pk, 6, k)
+            if (!write(pk, true)) return "Terputus di tengah upload (${off * 100 / data.size}%)"
+            off += k
+            progress(off * 100 / data.size)
+        }
+        val crc = CRC32().also { it.update(data) }.value
+        if (!write(byteArrayOf(-1, 0x12) + le32(crc), true)) return "Gagal menutup upload"
+        t = System.currentTimeMillis()
+        while (true) {
+            val st = readStatus()
+            if (st == 4) return null
+            if (st == 5) return "Data rusak (CRC tidak cocok)"
+            if (System.currentTimeMillis() - t > 8000) return "Tidak ada konfirmasi dari ESP32"
+            Thread.sleep(200)
+        }
     }
 }

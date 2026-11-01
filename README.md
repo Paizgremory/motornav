@@ -44,3 +44,8 @@ Di Google Maps pilih tempat, tekan **Bagikan**, lalu pilih **MotorNav**. Aplikas
 ## Catatan
 - Rute dari server demo OSRM (profil mobil, data OpenStreetMap). Untuk pemakaian pribadi ringan.
 - Notifikasi, telepon, dan info lagu dari Chronos belum ada di aplikasi ini.
+
+## 5. Wallpaper layar standby lewat Bluetooth (butuh firmware v22.13)
+Di aplikasi, bagian "Wallpaper layar standby": Pilih foto, atur gelap/zoom/geser, tekan **Kirim ke ESP32** (ESP32 harus sudah tersambung).
+Foto dikirim lewat BLE (sekitar 10-30 detik), diverifikasi CRC, lalu langsung tampil tanpa restart. Mode WiFi lama tetap ada (dipakai untuk video).
+Layar GC9A01 fisiknya 240x240, jadi foto diproses sebaik mungkin di ukuran itu: dibaca dari foto asli, diperkecil halus, dipertajam, dan di-dithering.
