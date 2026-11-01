@@ -240,11 +240,22 @@ object Geocode {
         return null
     }
 
+    /** Cari URL Google Maps lengkap di dalam isi halaman (mis. dalam skrip pengalihan). */
+    private fun mapsUrlsIn(body: String): List<String> {
+        val t = body.replace("\\u003d", "=").replace("\\u0026", "&").replace("\\/", "/").replace("&amp;", "&")
+        return Regex("https?://(?:www\\.)?google\\.[a-z.]+/maps/[^\"'\\s<>\\\\]+").findAll(t).map { it.value }.distinct().take(5).toList()
+    }
+
     /** Ambil koordinat dari tautan Maps: dari URL akhir dulu, lalu dari isi halamannya. */
     fun fromLink(link: String): Pair<Place?, String> {
-        val (fin, body) = Net.fetchFollow(link)
+        var (fin, body) = Net.fetchFollow(link)
         findCoord(fin)?.let { return Pair(it, fin) }
         if (body.isNotEmpty()) findCoord(body)?.let { return Pair(it, fin) }
+        // Halaman perantara (tautan pendek yang tidak dialihkan): ambil URL Maps lengkap dari isinya
+        for (u in mapsUrlsIn(body)) {
+            findCoord(u)?.let { return Pair(it, u) }
+            if (u.contains("/maps/place/")) { fin = u; break }
+        }
         return Pair(null, fin)
     }
 
