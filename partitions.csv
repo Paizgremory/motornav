@@ -1,0 +1,11 @@
+# Name,    Type, SubType, Offset,   Size,     Flags
+# Tabel partisi khusus (flash 4 MB), v22.31: DUA slot program (OTA lewat Bluetooth) @ 1,625 MB + foto 192 KB + animasi boot flash 512 KB.
+# Video wallpaper/animasi boot utamanya di microSD; partisi spiffs = tempat FOTO (115 KB) dan cadangan bila tanpa SD.
+# app0/app1 dipakai bergantian: update OTA selalu ditulis ke slot yang TIDAK sedang berjalan. Flash pertama kali WAJIB lewat kabel USB.
+# spiffs = SATU slot foto wallpaper standby; bootanim = video yang diputar saat sistem dinyalakan (cadangan bila tanpa SD).
+nvs,       data, nvs,     0x9000,   0x5000,
+otadata,   data, ota,     0xe000,   0x2000,
+app0,      app,  ota_0,   0x10000,  0x1A0000,
+app1,      app,  ota_1,   0x1B0000, 0x1A0000,
+spiffs,    data, spiffs,  0x350000, 0x30000,
+bootanim,  data, 0x40,    0x380000, 0x80000,
