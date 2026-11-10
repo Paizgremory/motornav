@@ -26,7 +26,9 @@ object Cfg {
         Item("Kartu pemutar + slider lagu di layar", "", 0, 1, 1, toggle = true, page = 1),
         Item("Masuk standby setelah", " dtk", 5, 120, 20),
         Item("Wajah menari saat lagu diputar", "", 0, 1, 1, toggle = true, page = 1),
-        Item("Kecerahan layar", "%", 10, 100, 100, hint = "Diredupkan lewat perangkat lunak (modul tanpa pin kecerahan)")
+        Item("Kecerahan layar", "%", 10, 100, 100, hint = "Diredupkan lewat perangkat lunak (modul tanpa pin kecerahan)"),
+        Item("Tema batang visualizer: Api (bukan pelangi)", "", 0, 1, 0, toggle = true, page = 1, hint = "Nyala = gradien merah-oranye-kuning mengikuti tinggi batang; mati = pelangi (lama). Cincin pelangi di tepi tidak berubah."),
+        Item("Efek getar jalan di wajah standby", "", 0, 1, 0, toggle = true, page = 1, hint = "Gimmick: wajah standby ikut bergoyang kecil mengikuti guncangan jalan, dibaca dari akselerometer HP lewat Bluetooth (bukan sensor fisik di motor -- MPU6050 sudah dicabut). Hanya terasa bila standby di mode wajah (bukan foto/video) dan HP menempel/diam di motor.")
     )
 
     @Volatile var dirty = true               // true = perlu dikirim ke ESP32
