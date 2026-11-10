@@ -401,8 +401,8 @@ object Notify {
             return
         }
         val n = sbn.notification ?: return
-        val answered = n.extras?.getBoolean(Notification.EXTRA_SHOW_CHRONOMETER, false) == true
-        if (answered) { if (ringKey == sbn.key) phoneIdle(); return }
+        val callAnswered = n.extras?.getBoolean(Notification.EXTRA_SHOW_CHRONOMETER, false) == true
+        if (callAnswered) { if (ringKey == sbn.key) phoneIdle(); return }
         if (ringKey == sbn.key) return
         ringKey = sbn.key
         ringSbn = sbn

@@ -18,6 +18,8 @@ object Voice {
     @Volatile var langOk = true
     @Volatile var enabled = true
     private var focus: AudioFocusRequest? = null
+    /** v3.28: kapan terakhir mengucapkan sesuatu (SystemClock.elapsedRealtime), supaya peringatan tidak memotong petunjuk belokan. */
+    @Volatile var lastAt = 0L
 
     private val attrs = AudioAttributes.Builder()
         .setUsage(AudioAttributes.USAGE_ASSISTANCE_NAVIGATION_GUIDANCE)
@@ -55,6 +57,7 @@ object Voice {
     /** Ucapkan teks; yang sedang diucapkan dipotong supaya petunjuk terbaru yang terdengar. */
     fun speak(text: String) {
         if (!enabled || !ready || !langOk || text.isBlank()) return
+        lastAt = android.os.SystemClock.elapsedRealtime()
         val t = tts ?: return
         val am = app?.getSystemService(Context.AUDIO_SERVICE) as? AudioManager
         if (am != null) {

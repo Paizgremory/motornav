@@ -41,7 +41,8 @@ object GoogleApi {
         "routes.duration,routes.distanceMeters," +
             "routes.legs.steps.distanceMeters," +
             "routes.legs.steps.navigationInstruction," +
-            "routes.legs.steps.polyline.encodedPolyline"
+            "routes.legs.steps.polyline.encodedPolyline," +
+            "routes.travelAdvisory.tollInfo"
 
     // ---------- HTTP ----------
     private fun post(url: String, key: String, mask: String?, body: String, timeoutMs: Int): String {
@@ -157,22 +158,26 @@ object GoogleApi {
     }
 
     // ---------- Rute ----------
-    /** Coba mode sepeda motor dulu; kalau ditolak, pakai mobil dengan lalu lintas. */
+    /** Coba mode sepeda motor dulu; kalau ditolak, pakai mobil dengan lalu lintas. Hanya rute utama. */
     fun route(fLat: Double, fLon: Double, tLat: Double, tLon: Double, key: String): Route =
-        routeAlternatives(fLat, fLon, tLat, tLon, key).first()
+        routes(fLat, fLon, tLat, tLon, key, false).first()
 
-    /** Rute + alternatif (bila Google punya lebih dari satu untuk pasangan asal-tujuan ini). */
-    fun routeAlternatives(fLat: Double, fLon: Double, tLat: Double, tLon: Double, key: String): List<Route> {
+    /**
+     * v3.28: rute utama + alternatif. Urutan percobaan per mode: (alternatif + hindari tol/feri) lalu polos, karena tidak semua
+     * mode menerima semua parameter. Galat kunci/kuota (401/403/429) langsung dilempar.
+     */
+    fun routes(fLat: Double, fLon: Double, tLat: Double, tLon: Double, key: String, avoid: Boolean): List<Route> {
         var firstErr: Exception? = null
         for (mode in listOf("TWO_WHEELER", "DRIVE")) {
-            try {
-                val l = routeMode(fLat, fLon, tLat, tLon, key, mode)
-                if (l.isNotEmpty()) return l
-            } catch (e: Exception) {
-                if (firstErr == null) firstErr = e
-                // 403 / API belum aktif / key salah: mode lain pasti gagal juga
-                val m = e.message ?: ""
-                if (m.contains("HTTP 403") || m.contains("HTTP 401") || m.contains("HTTP 429")) throw e
+            for (rich in listOf(true, false)) {
+                try {
+                    return routeMode(fLat, fLon, tLat, tLon, key, mode, rich, rich && avoid)
+                } catch (e: Exception) {
+                    if (firstErr == null) firstErr = e
+                    // 403 / API belum aktif / key salah: mode lain pasti gagal juga
+                    val m = e.message ?: ""
+                    if (m.contains("HTTP 403") || m.contains("HTTP 401") || m.contains("HTTP 429")) throw e
+                }
             }
         }
         throw firstErr ?: RuntimeException("Rute Google gagal")
@@ -181,28 +186,29 @@ object GoogleApi {
     private fun latLng(la: Double, lo: Double) =
         JSONObject().put("location", JSONObject().put("latLng", JSONObject().put("latitude", la).put("longitude", lo)))
 
-    private fun routeMode(fLat: Double, fLon: Double, tLat: Double, tLon: Double, key: String, mode: String): List<Route> {
+    private fun routeMode(fLat: Double, fLon: Double, tLat: Double, tLon: Double, key: String, mode: String,
+                          alternatives: Boolean, avoid: Boolean): List<Route> {
         val b = JSONObject()
         b.put("origin", latLng(fLat, fLon))
         b.put("destination", latLng(tLat, tLon))
         b.put("travelMode", mode)
         b.put("routingPreference", "TRAFFIC_AWARE")
-        b.put("computeAlternativeRoutes", true)
         b.put("languageCode", "id")
         b.put("regionCode", "ID")
         b.put("units", "METRIC")
+        if (alternatives) b.put("computeAlternativeRoutes", true)
+        if (avoid) b.put("routeModifiers", JSONObject().put("avoidTolls", true).put("avoidFerries", true))
         val j = JSONObject(post(ROUTES_URL, key, ROUTE_MASK, b.toString(), 20000))
         val routes = j.optJSONArray("routes")
         if (routes == null || routes.length() == 0) throw RuntimeException("Rute tidak ditemukan ($mode)")
         val out = ArrayList<Route>()
         for (ri in 0 until routes.length()) {
-            try { out.add(parseRoute(routes.getJSONObject(ri))) } catch (e: Exception) {}
+            try { out.add(parseRoute(routes.getJSONObject(ri))) } catch (e: Exception) { if (ri == 0) throw e }
         }
-        if (out.isEmpty()) throw RuntimeException("Rute tidak terbaca ($mode)")
         return out
     }
 
-    private fun parseRoute(r: JSONObject): Route {
+    internal fun parseRoute(r: JSONObject): Route {
         val sj = r.getJSONArray("legs").getJSONObject(0).getJSONArray("steps")
 
         val la = ArrayList<Double>()
@@ -224,16 +230,23 @@ object GoogleApi {
             val ni = s.optJSONObject("navigationInstruction")
             val man = ni?.optString("maneuver").orEmpty()
             val (type, mod) = if (i == 0) Pair("depart", "") else mapManeuver(man)
-            val name = streetFrom(ni?.optString("instructions").orEmpty())
+            val text = ni?.optString("instructions").orEmpty()
+            val name = streetFrom(text)
+            var fl = 0
+            if (Idn.looksToll(text)) fl = fl or StepFlag.TOLL
+            if (Idn.looksFerry(text) || man == "FERRY") fl = fl or StepFlag.FERRY
+            val exit = if (type == "roundabout") Idn.parseExit(text) else 0
             steps.add(
-                Step(type, mod, name, s.optDouble("distanceMeters", 0.0), cum[max(0, endIdx[i])], 0)
+                Step(type, mod, name, s.optDouble("distanceMeters", 0.0), cum[max(0, endIdx[i])], exit, fl)
             )
         }
         // Google tidak punya langkah "tiba"; aplikasi mengharapkannya di akhir.
         steps.add(Step("arrive", "", "", 0.0, cum[n - 1], 0))
 
         val dur = r.optString("duration", "").removeSuffix("s").toDoubleOrNull() ?: (cum[n - 1] / 8.0)
-        return Route(la.toDoubleArray(), lo.toDoubleArray(), cum, steps, cum[n - 1], dur)
+        val route = Route(la.toDoubleArray(), lo.toDoubleArray(), cum, steps, cum[n - 1], dur)
+        if (r.optJSONObject("travelAdvisory")?.has("tollInfo") == true) route.tollHint = true
+        return route
     }
 
     private fun mapManeuver(m: String): Pair<String, String> = when (m) {
@@ -300,22 +313,26 @@ object Engine {
     @Volatile var note = ""   // keterangan untuk status, mis. "Rute: Google"
     @Volatile var mapNote = ""
 
+    /** Rute terpilih saja (dipertahankan untuk kode lama). */
     fun route(ctx: Context, fLat: Double, fLon: Double, tLat: Double, tLon: Double): Route =
-        routeAlternatives(ctx, fLat, fLon, tLat, tLon).first()
+        plan(ctx, fLat, fLon, tLat, tLon).route
 
-    /** Rute terbaik + alternatifnya (untuk dialog pilih rute sebelum mulai navigasi). */
-    fun routeAlternatives(ctx: Context, fLat: Double, fLon: Double, tLat: Double, tLon: Double): List<Route> {
+    /** v3.28: ambil semua kandidat rute, pilih sesuai preferensi (NavPrefs), lalu periksa kewajarannya. */
+    fun plan(ctx: Context, fLat: Double, fLon: Double, tLat: Double, tLon: Double): Plan {
+        val avoid = NavPrefs.avoidToll
         val key = GKey.get(ctx)
+        var cands: List<Route>? = null
         if (key.isNotEmpty()) {
             try {
-                val l = GoogleApi.routeAlternatives(fLat, fLon, tLat, tLon, key)
+                cands = GoogleApi.routes(fLat, fLon, tLat, tLon, key, avoid)
                 note = "Rute: Google"
-                return l
             } catch (e: Exception) {
                 note = "Rute: OSRM (Google gagal: ${e.message})"
             }
         } else note = "Rute: OSRM (belum ada API key)"
-        return Osrm.routeAlternatives(fLat, fLon, tLat, tLon)
+        if (cands == null) cands = Osrm.routes(fLat, fLon, tLat, tLon, avoid)
+        val pick = Picker.pick(cands, NavPrefs.pref, avoid)
+        return Plan(pick.route, Guard.check(pick.route, fLat, fLon, tLat, tLon, avoid), pick.notes)
     }
 
     fun search(ctx: Context, q: String, biasLat: Double, biasLon: Double): List<Place> {

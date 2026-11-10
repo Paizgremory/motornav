@@ -15,14 +15,12 @@ import android.net.Uri
 import android.os.SystemClock
 import java.net.HttpURLConnection
 import java.net.URL
-import java.net.URLEncoder
 import java.util.concurrent.Executors
 import kotlin.math.hypot
 import kotlin.math.log10
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.pow
-import org.json.JSONObject
 
 /**
  * Memantau pemutar musik HP (Spotify, YouTube Music, dll.) lewat akses notifikasi dan meneruskan ke ESP32:
@@ -53,50 +51,6 @@ object Music {
     @Volatile var npSpeed = 1f
     private var lastPosSent = 0L
     private var lastPosVal = -1L
-
-    // ---------- lirik berjalan (lrclib.net, gratis tanpa API key) ----------
-    private var lyricsKey = ""
-    @Volatile private var lyricsBusy = false
-    @Volatile var lyricsLines: List<Pair<Long, String>> = emptyList()   // ms sejak awal lagu -> baris
-    @Volatile var lyricsStatus = ""   // "", "Mencari lirik...", "Lirik tidak ditemukan", "Lirik: instrumental"
-
-    /** Baris lirik yang cocok dengan posisi lagu sekarang (atau "" bila tidak ada/lum ketemu). */
-    fun currentLyricLine(): String {
-        val lines = lyricsLines
-        if (lines.isEmpty()) return ""
-        val pos = posNow()
-        var out = ""
-        for ((t, txt) in lines) {
-            if (t > pos) break
-            out = txt
-        }
-        return out
-    }
-
-    private fun fetchLyrics(title: String, artist: String, durSec: Long) {
-        lyricsBusy = true
-        lyricsStatus = "Mencari lirik..."
-        exec.execute {
-            try {
-                val lrc = Lrc.fetch(title, artist, durSec)
-                if (lrc == null) {
-                    lyricsLines = emptyList()
-                    lyricsStatus = "Lirik tidak ditemukan"
-                } else if (lrc.isEmpty()) {
-                    lyricsLines = emptyList()
-                    lyricsStatus = "Lirik: instrumental"
-                } else {
-                    lyricsLines = lrc
-                    lyricsStatus = ""
-                }
-            } catch (e: Exception) {
-                lyricsLines = emptyList()
-                lyricsStatus = "Lirik gagal: ${e.message}"
-            } finally {
-                lyricsBusy = false
-            }
-        }
-    }
 
     private fun sessions(ctx: Context): List<MediaController> =
         (ctx.getSystemService(Context.MEDIA_SESSION_SERVICE) as MediaSessionManager)
@@ -157,15 +111,6 @@ object Music {
 
         val key = "$playing|$title|$artist"
         val now = SystemClock.elapsedRealtime()
-
-        val lk = "$title|$artist"
-        if (playing && lk.isNotBlank() && lk != lyricsKey && !lyricsBusy) {
-            lyricsKey = lk
-            fetchLyrics(title, artist, npDur / 1000)
-        } else if (!playing && title.isEmpty()) {
-            lyricsKey = ""; lyricsLines = emptyList(); lyricsStatus = ""
-        }
-
         if (!(key == lastKey && now - lastSent < 4000)) {
             if (!(!playing && lastKey == "")) {
                 if (ble.sendMusic(playing, title, artist)) { lastKey = key; lastSent = now; lastPosSent = 0 }
@@ -197,7 +142,7 @@ object Music {
         }
     }
 
-    fun reset() { lastKey = ""; artKey = ""; lyricsKey = ""; lyricsLines = emptyList(); lyricsStatus = "" }
+    fun reset() { lastKey = ""; artKey = "" }
     fun shutdown() { stopViz() }
 
     // ---------- sampul ----------
