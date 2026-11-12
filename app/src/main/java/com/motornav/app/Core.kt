@@ -481,4 +481,4 @@ object Core {
         val sb = StringBuilder()
         sb.append("ESP32: ").append(ble.msg).append('\n')
         if (lat.isNaN()) sb.append("GPS: menunggu sinyal...\n")
-        else sb.append(String.format(Locale.US, "GPS: %.5f, %.5f  (±%d m)  %d km/j\n", lat, lon, acc.roundToInt(), (speed * 3.6f).roundToInt())
+        else sb.append(String.format(Locale.US, "GPS: %.5f, %.5f  (\u00B1%d m)  %d km/j\n", lat, lon, acc.roundToInt(), (speed * 3.6f).roundToI
