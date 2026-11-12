@@ -411,6 +411,9 @@ class Ble(private val ctx: Context, private val onMsg: (String) -> Unit) {
 
     fun sendCallEnd(): Boolean = sendControl(byteArrayOf(-1, 0x23))
 
+    /** Efek "getar jalan" di wajah standby (Vib.kt, v22.36): [0xFF][0x34][intensitas 0..255]. */
+    fun sendVib(mag: Int): Boolean = sendControl(byteArrayOf(-1, 0x34, mag.coerceIn(0, 255).toByte()))
+
     private fun pinBytes(pin: String): ByteArray = pin.padEnd(6, '0').take(6).toByteArray(Charsets.US_ASCII)
 
     /** Kunci kontak ON/OFF lewat relay 1: [FF][30][on][kode 6 karakter]. */
