@@ -51,27 +51,17 @@ object Core {
     private var routeIdx = 0
     private var along = 0.0
     private var offCount = 0
+    private var offSince = 0L
     private var lastReroute = 0L
     private var arrivedAt = 0L
-    private val announcer = Announcer()                       // v3.28: suara petunjuk bertahap menurut kecepatan
-    private val monitor = Monitor()                           // v3.28: GPS lemah / berlawanan arah
-    private val rrTracker = RerouteTracker()                  // v3.28: rute ulang berulang
-    private var destSide = 0                                  // sisi tujuan terhadap ujung rute (-1 kiri, 1 kanan)
-    @Volatile private var lastFixAt = 0L
-    private var curOff = 0.0                                  // jarak posisi ke rute (m), dari computeNav
-    private var curBearing = 0f                               // arah rute di posisi sekarang
-    @Volatile private var routeWarn = ""                      // peringatan + keterangan pilihan rute, tampil di status
-    private var lastAltCheck = 0L
-    @Volatile private var altBusy = false
+    private var annStep = -1
+    private var annLevel = 0
     @Volatile private var state: NavState? = null
     @Volatile private var dirty = true
     @Volatile private var running = false
+    @Volatile private var forceState = true   // v3.22: kirim status navigasi ON/OFF ke ESP32 SEKARANG (tak nunggu jatah 2 dtk)
     private var lm: LocationManager? = null
     private var loopThread: Thread? = null
-    private var txThread: Thread? = null
-    private val txQ = java.util.concurrent.ArrayBlockingQueue<ByteArray>(1)   // frame terbaru yang menunggu dikirim (yang lama dibuang)
-    @Volatile private var txBusy = false
-    private var encQ = 60                                                     // kualitas JPEG terakhir yang dipakai (titik awal pencarian berikutnya)
 
     fun init(ctx: Context) {
         if (inited) return
@@ -79,11 +69,9 @@ object Core {
         val pr = app.getSharedPreferences("motornav", Context.MODE_PRIVATE)
         zoom = pr.getInt("zoom", 17).coerceIn(15, 18)
         headingUp = pr.getBoolean("headingUp", true)
-        mapQuality = pr.getInt("mapq", 0).coerceIn(0, 2)
         ble = Ble(app) { pushStatus() }
         tiles = Tiles(app) { dirty = true }
         renderer = Renderer(tiles)
-        NavPrefs.load(app)
         Voice.init(app)
         inited = true
     }
@@ -99,15 +87,13 @@ object Core {
         running = true
         startLocation()
         loopThread = Thread { loop() }.also { it.isDaemon = true; it.start() }
-        txQ.clear()
-        txThread = Thread { txLoop() }.also { it.isDaemon = true; it.start() }
     }
 
     fun stop() {
         running = false
         try { lm?.removeUpdates(locListener) } catch (e: Exception) {}
         loopThread?.interrupt()
-        txThread?.interrupt()
+        Vib.stop()
         ble.disconnect()
     }
 
@@ -133,18 +119,17 @@ object Core {
         route = null
         routeMsg = "Mencari rute ke ${p.name}..."
         rerouting = true
+        forceState = true
         pushStatus()
         val fl = lat; val fo = lon
         exec.execute {
             try {
-                val pl = Engine.plan(app, fl, fo, p.lat, p.lon)
-                val r = pl.route
-                rrTracker.clear()
-                adopt(pl)
-                var msg = "Navigasi dimulai. Jarak ${Idn.spokenTotal(r.total)}, sekitar ${Idn.minutes(r.dur)} menit."
-                if (pl.notes.any { it.contains("tanpa tol") }) msg += " Rute dipilih tanpa tol."
-                if (NavPrefs.guardVoice) Guard.spoken(pl.issues).let { if (it.isNotEmpty()) msg += " $it" }
-                Voice.speak(msg)
+                val r = Engine.route(app, fl, fo, p.lat, p.lon)
+                routeIdx = 0; along = 0.0; offCount = 0; offSince = 0L
+                annStep = -1; annLevel = 0
+                route = r
+                History.add(app, p)   // riwayat & favorit tujuan (disimpan di HP)
+                Voice.speak("Navigasi dimulai. Jarak ${spokenTotal(r.total)}, sekitar ${max(1, (r.dur / 60).roundToInt())} menit.")
                 routeMsg = ""
             } catch (e: Exception) {
                 dest = null
@@ -152,48 +137,55 @@ object Core {
             } finally {
                 rerouting = false
                 lastReroute = SystemClock.elapsedRealtime()
+                forceState = true
                 computeNav(); dirty = true; pushStatus()
             }
         }
     }
 
+    /** Pakai rute yang sudah dipilih pengguna (dari dialog pilih rute alternatif) tanpa fetch ulang. */
+    fun setDestinationWithRoute(p: Place, r: Route) {
+        dest = p
+        mapOnly = false
+        routeIdx = 0; along = 0.0; offCount = 0; offSince = 0L
+        annStep = -1; annLevel = 0
+        route = r
+        History.add(app, p)
+        Voice.speak("Navigasi dimulai. Jarak ${spokenTotal(r.total)}, sekitar ${max(1, (r.dur / 60).roundToInt())} menit.")
+        routeMsg = ""
+        rerouting = false
+        lastReroute = SystemClock.elapsedRealtime()
+        forceState = true
+        computeNav(); dirty = true; pushStatus()
+    }
+
     fun startMapOnly() {
         route = null; dest = null; mapOnly = true; routeMsg = ""
+        forceState = true
         computeNav(); dirty = true
     }
 
     fun stopNav() {
         route = null; dest = null; mapOnly = false; routeMsg = ""; rerouting = false
-        routeWarn = ""; announcer.reset(); monitor.reset(); rrTracker.clear()
         state = null
+        forceState = true   // beri tahu ESP32 SEKARANG (jangan nunggu jatah 2 dtk) supaya layar nav tidak nyangkut/kedip sebelum balik ke wajah
         pushStatus()
-    }
-
-    /** Pasang rencana rute baru: reset posisi di rute, pengumuman, dan peringatan. */
-    private fun adopt(pl: Plan) {
-        val r = pl.route
-        routeIdx = 0; along = 0.0; offCount = 0
-        announcer.reset(); monitor.reset()
-        destSide = dest?.let { SmartNav.destSide(r, it.lat, it.lon) } ?: 0
-        routeWarn = (pl.issues.map { it.text } + pl.notes).joinToString("\n")
-        lastAltCheck = SystemClock.elapsedRealtime()
-        route = r
     }
 
     private fun doReroute() {
         val d = dest ?: return
         rerouting = true
+        offSince = 0L
         lastReroute = SystemClock.elapsedRealtime()
-        val many = rrTracker.hit(lastReroute) >= 3
-        Voice.speak(if (many) "Keluar jalur lagi. Mencari rute baru. Rute sudah berubah beberapa kali, periksa jalan atau tujuan Anda." else "Keluar jalur. Mencari rute baru.")
+        Voice.speak("Keluar jalur. Mencari rute baru.")
         val fl = lat; val fo = lon
         exec.execute {
             try {
-                val pl = Engine.plan(app, fl, fo, d.lat, d.lon)
-                adopt(pl)
-                var msg = "Rute baru ditemukan."
-                if (NavPrefs.guardVoice) Guard.spoken(pl.issues).let { if (it.isNotEmpty()) msg += " $it" }
-                Voice.speak(msg)
+                val r = Engine.route(app, fl, fo, d.lat, d.lon)
+                routeIdx = 0; along = 0.0; offCount = 0; offSince = 0L
+                annStep = -1; annLevel = 0
+                route = r
+                Voice.speak("Rute baru ditemukan.")
                 routeMsg = ""
             } catch (e: Exception) {
                 routeMsg = "Rute ulang gagal: ${e.message}"
@@ -232,7 +224,6 @@ object Core {
     private fun onLocation(l: Location) {
         lat = l.latitude
         lon = l.longitude
-        lastFixAt = SystemClock.elapsedRealtime()
         acc = if (l.hasAccuracy()) l.accuracy else -1f
         speed = if (l.hasSpeed() && l.speed > 0f) l.speed else 0f
         var h: Float? = null
@@ -295,10 +286,19 @@ object Core {
         val pr = project(r, la, lo)
         routeIdx = pr.idx
         along = pr.along
-        curOff = pr.lat
-        curBearing = SmartNav.routeBearing(r, pr.idx)
-        if (pr.lat > 50.0 && (acc < 0f || acc < 50f)) offCount++ else offCount = 0
-        if (offCount >= 3 && !rerouting && SystemClock.elapsedRealtime() - lastReroute > 10000) doReroute()
+        // Re-routing lebih halus: selain hitungan sampel GPS di luar jalur (offCount), disyaratkan juga sudah
+        // keluar jalur selama jeda minimum (offMinMs) secara waktu nyata, supaya telat belok sebentar atau lonjakan
+        // sinyal GPS tunggal tidak langsung memicu hitung ulang rute (yang terasa "mondar-mandir" bila dekat jalan lain).
+        val offMinMs = 4000L
+        if (pr.lat > 50.0 && (acc < 0f || acc < 50f)) {
+            if (offSince == 0L) offSince = SystemClock.elapsedRealtime()
+            offCount++
+        } else {
+            offSince = 0L
+            offCount = 0
+        }
+        val offDur = if (offSince != 0L) SystemClock.elapsedRealtime() - offSince else 0L
+        if (offCount >= 3 && offDur >= offMinMs && !rerouting && SystemClock.elapsedRealtime() - lastReroute > 10000) doReroute()
 
         val rem = max(0.0, r.total - along)
         var k = 0
@@ -330,7 +330,7 @@ object Core {
                 mKind = 1
                 street = dest?.name?.split(", ")?.firstOrNull() ?: "Tujuan"
             } else street = man.name.ifBlank { instr }
-            smartAnnounce(k, r, man, mDist)
+            announce(k + 1, man, instr, mDist)
             val nx = r.steps.getOrNull(k + 2)
             if (nx != null && man.type != "arrive" && man.len < 350.0) {
                 hasThen = true
@@ -342,52 +342,36 @@ object Core {
             mDist, mAngle, mKind, street, instr, hasThen, thenAngle, thenKind, rem, remSec)
     }
 
-    // ---------- suara petunjuk (v3.28: Announcer) ----------
-    private fun smartAnnounce(k: Int, r: Route, man: Step, dist: Double) {
-        val msg = announcer.turn(k + 1, man, r.steps.getOrNull(k + 2), dist, speed.toDouble(), destSide)
-            ?: announcer.straight(k, r.steps[k], along - (if (k > 0) r.steps[k - 1].endDist else 0.0), dist)
-        if (msg != null) Voice.speak(msg)
+    // ---------- suara petunjuk ----------
+    private fun spokenDist(m: Double): String {
+        if (m >= 950) return String.format(Locale("id", "ID"), "%.1f kilometer", m / 1000)
+        val v = ((m / 50).roundToInt() * 50).coerceAtLeast(50)
+        return "$v meter"
     }
 
-    /** ±1 kali per detik: pantau GPS / arah, dan cek rute yang jauh lebih cepat. */
-    private fun monitorTick() {
-        if (route == null || rerouting) return
-        val now = SystemClock.elapsedRealtime()
-        if (NavPrefs.guardVoice) {
-            val msg = monitor.update(now, acc, speed, lastFixAt, heading, curBearing, curOff, now - Voice.lastAt > 6000L)
-            if (msg != null) Voice.speak(msg)
-        }
-        altCheck(now)
-    }
+    private fun spokenTotal(m: Double): String =
+        if (m >= 1000) String.format(Locale("id", "ID"), "%.1f kilometer", m / 1000) else "${(m / 10).roundToInt() * 10} meter"
 
-    private fun altCheck(now: Long) {
-        val r = route ?: return
-        val d = dest ?: return
-        val st = state ?: return
-        if (!NavPrefs.autoAlt || altBusy || st.mode != 1 || lat.isNaN()) return
-        if (now - lastAltCheck < 150000L) return
-        if (speed < 2f || st.remDist < 3000.0 || st.mDist < 600.0) return     // hanya saat melaju, masih jauh, dan belokan berikutnya belum dekat
-        lastAltCheck = now
-        altBusy = true
-        val fl = lat; val fo = lon; val remSec = st.remSec
-        exec.execute {
-            try {
-                val pl = Engine.plan(app, fl, fo, d.lat, d.lon)
-                if (route !== r || dest !== d || rerouting) return@execute      // rute berubah selagi menunggu: buang
-                val endOk = pl.issues.none { it.code == "end" }
-                val gain = Advisor.savings(remSec, r, pl.route, NavPrefs.avoidToll, endOk)
-                if (gain > 0.0) {
-                    adopt(pl)
-                    Voice.speak("Ada rute lebih cepat, hemat ${Idn.minutes(gain)} menit. Mengalihkan rute.")
-                    routeMsg = ""
-                    computeNav(); dirty = true
-                }
-            } catch (e: Exception) {
-                // abaikan: rute sekarang tetap dipakai
-            } finally {
-                altBusy = false
-            }
+    /** Level 1 = sekitar 500 m, 2 = sekitar 200 m, 3 = sebentar lagi (80 m). Tiap level diucapkan sekali per belokan. */
+    private fun announce(idx: Int, man: Step, instr: String, dist: Double) {
+        if (idx != annStep) { annStep = idx; annLevel = 0 }
+        val level = when {
+            dist <= 80.0 -> 3
+            dist <= 200.0 -> 2
+            dist <= 500.0 -> 1
+            else -> 0
         }
+        if (level <= annLevel) return
+        annLevel = level
+        if (instr == "Lurus") return
+        val low = instr.replaceFirstChar { it.lowercase() }
+        val onto = if (man.type != "arrive" && man.name.isNotBlank() && !man.type.startsWith("round")) " ke ${man.name}" else ""
+        val msg = when {
+            man.type == "arrive" -> if (level == 3) "Tujuan di depan." else "Dalam ${spokenDist(dist)}, tiba di tujuan."
+            level == 3 -> "$instr sekarang$onto."
+            else -> "Dalam ${spokenDist(dist)}, $low$onto."
+        }
+        Voice.speak(msg)
     }
 
     // ---------- loop gambar + kirim ----------
@@ -411,13 +395,9 @@ object Core {
                 val now = SystemClock.elapsedRealtime()
                 val on = navOn()
                 if (ble.ready) {
-                    if (now - lastState > 2000) {
-                        // v22.42: heartbeat navigasi -- INI yang bikin ESP32 tahu HP masih nyambung (appLinked(), timeout 8 dtk).
-                        // lastState cuma diperbarui kalau sendControl() benar-benar terkirim; kalau gagal/terlewat (mis. lock
-                        // sendang dipakai kirim frame peta), coba lagi secepatnya di putaran berikut (40 ms), bukan nunggu 2 dtk
-                        // lagi -- supaya heartbeat tidak ikut telat berturut-turut sampai ESP32 menyangka HP terputus dan
-                        // navigasi tiba-tiba keluar sendiri (muncul sebentar lalu balik ke standby).
-                        if (ble.sendControl(byteArrayOf(-1, 2, if (on) 1 else 0))) lastState = now
+                    if (forceState || now - lastState > 2000) {
+                        if (ble.sendControl(byteArrayOf(-1, 2, if (on) 1 else 0))) forceState = false
+                        lastState = now
                     }
                     if (now - lastTime > 20000) {
                         val c = Calendar.getInstance()
@@ -427,6 +407,7 @@ object Core {
                     }
                 }
                 if (now - lastMusic > 1000) { lastMusic = now; Music.poll(app, ble) }
+                Vib.poll(app, ble, Cfg.get(app, 12) == 1)   // efek getar jalan (gimmick): menyala/mati sendiri, murah dipanggil tiap tick
                 if (Cfg.dirty && ble.ready && now - lastCfg > 300) {            // pengaturan tampilan: kirim bila berubah / baru tersambung
                     lastCfg = now
                     if (ble.sendControl(Cfg.packet(app))) Cfg.dirty = false
@@ -434,23 +415,73 @@ object Core {
                 val st = state
                 if (on && st != null) {
                     val sig = sigOf(st)
-                    // Render + encode berjalan selagi frame sebelumnya masih dikirim (thread kirim terpisah); frame yang
-                    // tertinggal dibuang, jadi yang sampai ke LCD selalu yang terbaru. Saat kirim masih jalan, render dijarangkan.
-                    val gap = if (txBusy) 150L else 0L
-                    if ((dirty || sig != lastSig || now - lastRender > 1500) && now - lastRender >= gap) {
+                    if (dirty || sig != lastSig || now - lastRender > 1500) {
                         dirty = false
                         val bmp = renderer.render(st)
                         pushPreview(bmp)
                         if (ble.ready) {
-                            // bergerak: frame lebih kecil (kirim ±40% lebih cepat); diam: kualitas penuh
-                            val jpg = encode(bmp, frameLimit(st.speedKmh >= 8))
-                            if (jpg != null) { txQ.clear(); txQ.offer(jpg) }
+                            val jpg = encode(bmp)
+                            if (jpg != null) ble.sendFrame(jpg)
                         }
                         lastSig = sig
                         lastRender = SystemClock.elapsedRealtime()
                     }
                 }
                 if (now - lastBatt > 30000) { lastBatt = now; Notify.batteryCheck(app) }
-                if (now - lastStatus > 1000) { pushStatus(); lastStatus = now; monitorTick() }
+                if (now - lastStatus > 1000) { pushStatus(); lastStatus = now }
             } catch (e: InterruptedException) {
-  
+                return
+            } catch (e: Exception) {
+                // abaikan, coba lagi di putaran berikut
+            }
+            try { Thread.sleep(250) } catch (e: InterruptedException) { return }
+        }
+    }
+
+    /** Cari kualitas JPEG tertinggi yang masih muat di batas buffer firmware (12 KB). */
+    private fun encode(b: Bitmap): ByteArray? {
+        val limit = 11500
+        var lo = 20
+        var hi = 92
+        var best: ByteArray? = null
+        while (lo <= hi) {
+            val q = (lo + hi) / 2
+            val bo = ByteArrayOutputStream(12000)
+            b.compress(Bitmap.CompressFormat.JPEG, q, bo)
+            if (bo.size() <= limit) { best = bo.toByteArray(); lo = q + 1 } else hi = q - 1
+        }
+        if (best != null) return best
+        for (q in intArrayOf(15, 10)) {
+            val bo = ByteArrayOutputStream(12000)
+            b.compress(Bitmap.CompressFormat.JPEG, q, bo)
+            if (bo.size() <= limit) return bo.toByteArray()
+        }
+        return null
+    }
+
+    private fun pushPreview(b: Bitmap) {
+        val l = listener ?: return
+        val c = b.copy(Bitmap.Config.ARGB_8888, false)
+        ui.post { l.onPreview(c) }
+    }
+
+    private fun pushStatus() {
+        val l = listener ?: return
+        val sb = StringBuilder()
+        sb.append("ESP32: ").append(ble.msg).append('\n')
+        if (lat.isNaN()) sb.append("GPS: menunggu sinyal...\n")
+        else sb.append(String.format(Locale.US, "GPS: %.5f, %.5f  (±%d m)  %d km/j\n", lat, lon, acc.roundToInt(), (speed * 3.6f).roundToInt()))
+        val d = dest
+        val s = state
+        if (d != null) {
+            sb.append("Tujuan: ").append(d.name).append('\n')
+            if (s != null && s.route != null) sb.append(String.format(Locale.US, "Sisa: %.1f km\n", s.remDist / 1000))
+        } else if (mapOnly) sb.append("Mode: peta saja\n")
+        if (d != null && Engine.note.isNotEmpty()) sb.append(Engine.note).append('\n')
+        if (Engine.mapNote.isNotEmpty()) sb.append(Engine.mapNote).append('\n')
+        if (routeMsg.isNotEmpty()) sb.append(routeMsg).append('\n')
+        if (ble.framesSent > 0) sb.append("Frame terkirim: ").append(ble.framesSent).append('\n')
+        val txt = sb.toString().trim()
+        ui.post { l.onStatus(txt) }
+    }
+}
