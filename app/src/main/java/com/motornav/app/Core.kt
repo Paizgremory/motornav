@@ -96,7 +96,6 @@ object Core {
         running = false
         try { lm?.removeUpdates(locListener) } catch (e: Exception) {}
         loopThread?.interrupt()
-        Vib.stop()
         ble.disconnect()
     }
 
@@ -418,7 +417,6 @@ object Core {
                     }
                 }
                 if (now - lastMusic > 1000) { lastMusic = now; Music.poll(app, ble) }
-                Vib.poll(app, ble, Cfg.get(app, 12) == 1)   // efek getar jalan (gimmick): menyala/mati sendiri, murah dipanggil tiap tick
                 if (Cfg.dirty && ble.ready && now - lastCfg > 300) {            // pengaturan tampilan: kirim bila berubah / baru tersambung
                     lastCfg = now
                     if (ble.sendControl(Cfg.packet(app))) Cfg.dirty = false
@@ -486,13 +484,4 @@ object Core {
         val s = state
         if (d != null) {
             sb.append("Tujuan: ").append(d.name).append('\n')
-            if (s != null && s.route != null) sb.append(String.format(Locale.US, "Sisa: %.1f km\n", s.remDist / 1000))
-        } else if (mapOnly) sb.append("Mode: peta saja\n")
-        if (d != null && Engine.note.isNotEmpty()) sb.append(Engine.note).append('\n')
-        if (Engine.mapNote.isNotEmpty()) sb.append(Engine.mapNote).append('\n')
-        if (routeMsg.isNotEmpty()) sb.append(routeMsg).append('\n')
-        if (ble.framesSent > 0) sb.append("Frame terkirim: ").append(ble.framesSent).append('\n')
-        val txt = sb.toString().trim()
-        ui.post { l.onStatus(txt) }
-    }
-}
+            if (s != 
