@@ -481,4 +481,18 @@ object Core {
         val sb = StringBuilder()
         sb.append("ESP32: ").append(ble.msg).append('\n')
         if (lat.isNaN()) sb.append("GPS: menunggu sinyal...\n")
-        else sb.append(String.format(Locale.US, "GPS: %.5f, %.5f  (\u00B1%d m)  %d km/j\n", lat, lon, acc.roundToInt(), (speed * 3.6f).roundToI
+        else sb.append(String.format(Locale.US, "GPS: %.5f, %.5f  (\u00B1%d m)  %d km/j\n", lat, lon, acc.roundToInt(), (speed * 3.6f).roundToInt()))
+        val d = dest
+        val s = state
+        if (d != null) {
+            sb.append("Tujuan: ").append(d.name).append('\n')
+            if (s != null && s.route != null) sb.append(String.format(Locale.US, "Sisa: %.1f km\n", s.remDist / 1000))
+        } else if (mapOnly) sb.append("Mode: peta saja\n")
+        if (d != null && Engine.note.isNotEmpty()) sb.append(Engine.note).append('\n')
+        if (Engine.mapNote.isNotEmpty()) sb.append(Engine.mapNote).append('\n')
+        if (routeMsg.isNotEmpty()) sb.append(routeMsg).append('\n')
+        if (ble.framesSent > 0) sb.append("Frame terkirim: ").append(ble.framesSent).append('\n')
+        val txt = sb.toString().trim()
+        ui.post { l.onStatus(txt) }
+    }
+}
