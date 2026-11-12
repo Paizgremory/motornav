@@ -1,0 +1,9 @@
+# Name,    Type, SubType, Offset,   Size,     Flags
+# VARIAN BESAR (flash 4 MB): dua slot program @ 1,875 MB (0x1E0000). Pakai HANYA bila "Sketch uses ... bytes" > 1703936 dengan partitions.csv biasa.
+# Ganti nama berkas ini menjadi partitions.csv. Partisi animasi boot flash DIHAPUS: animasi boot hanya dari microSD (firmware tetap jalan tanpa partisi itu).
+# spiffs = SATU slot foto wallpaper standby (192 KB, cukup untuk foto 115 KB).
+nvs,       data, nvs,     0x9000,   0x5000,
+otadata,   data, ota,     0xe000,   0x2000,
+app0,      app,  ota_0,   0x10000,  0x1E0000,
+app1,      app,  ota_1,   0x1F0000, 0x1E0000,
+spiffs,    data, spiffs,  0x3D0000, 0x30000,
