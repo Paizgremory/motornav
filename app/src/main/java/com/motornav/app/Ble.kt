@@ -11,6 +11,8 @@ import android.os.Looper
 import java.util.UUID
 import java.util.concurrent.Semaphore
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.locks.ReentrantLock
+import kotlin.concurrent.withLock
 import java.io.File
 import java.util.zip.CRC32
 
@@ -41,7 +43,7 @@ class Ble(private val ctx: Context, private val onMsg: (String) -> Unit) {
     private var scanner: BluetoothLeScanner? = null
     private val sem = Semaphore(0)
     private val rsem = Semaphore(0)
-    private val txLock = Any()
+    private val txLock = ReentrantLock()  // v22.42: ReentrantLock (bukan Object) supaya sendControl() bisa tryLock tanpa nunggu lama
     @Volatile private var lastWriteOk = true
     @Volatile private var lastStatus = -1
     @Volatile var uploading = false
@@ -291,16 +293,33 @@ class Ble(private val ctx: Context, private val onMsg: (String) -> Unit) {
         return sem.tryAcquire(1500, TimeUnit.MILLISECONDS) && (!strict || lastWriteOk)
     }
 
-    /** Paket kontrol: [0xFF][cmd][...]. */
+    /**
+     * Paket kontrol: [0xFF][cmd][...]. v22.42: pakai tryLock dengan batas waktu pendek (bukan menunggu tanpa batas),
+     * supaya paket kontrol PENTING (terutama heartbeat navigasi [0xFF][2] yang dikirim tiap 2 dtk dari Core.loop())
+     * tidak ikut tertahan lama di belakang satu frame peta yang sedang dikirim (sendFrameLocked bisa makan >2 dtk
+     * di sambungan BLE yang lambat/lemah). Sebelumnya keduanya berbagi lock yang sama dan saling menunggu tanpa
+     * batas waktu, jadi kalau pengiriman frame peta macet, heartbeat ikut macet -> ESP32 menyangka HP terputus
+     * (appLinked() di firmware timeout 8 dtk) -> navigasi tiba-tiba keluar sendiri walau BLE sebenarnya masih nyambung.
+     */
     fun sendControl(p: ByteArray): Boolean {
         if (!ready || uploading) return false
-        return synchronized(txLock) { if (uploading) false else write(p) }
+        if (!txLock.tryLock(250, TimeUnit.MILLISECONDS)) return false   // sedang dipakai kirim frame peta -> jangan nunggu, coba lagi putaran berikutnya
+        try {
+            return if (uploading) false else write(p)
+        } finally {
+            txLock.unlock()
+        }
     }
 
     /** Kirim satu frame JPEG: tiap paket = [id][offset LE16][total LE16][data]. */
     fun sendFrame(data: ByteArray): Boolean {
         if (!ready || uploading) return false
-        return synchronized(txLock) { if (uploading) false else sendFrameLocked(data) }
+        txLock.lock()
+        try {
+            return if (uploading) false else sendFrameLocked(data)
+        } finally {
+            txLock.unlock()
+        }
     }
 
     private fun sendFrameLocked(data: ByteArray): Boolean {
@@ -333,8 +352,8 @@ class Ble(private val ctx: Context, private val onMsg: (String) -> Unit) {
     /** Kirim notifikasi. icon: null = tanpa logo, kosong = pakai logo yang sudah ada di ESP32, isi = logo 48x48 RGB565 baru. */
     fun sendNotification(pkg: String, app: String, title: String, msg: String, icon: ByteArray?, drive: Boolean = false, more: Int = 0): Boolean {
         if (!ready || uploading) return false
-        return synchronized(txLock) {
-            if (uploading) return@synchronized false
+        return txLock.withLock {
+            if (uploading) return@withLock false
             val pl = maxPayload()
             if (icon != null && icon.isNotEmpty()) {
                 var off = 0
@@ -345,7 +364,7 @@ class Ble(private val ctx: Context, private val onMsg: (String) -> Unit) {
                     pk[0] = -1; pk[1] = 0x21
                     pk[2] = (off and 255).toByte(); pk[3] = ((off shr 8) and 255).toByte()
                     System.arraycopy(icon, off, pk, 4, k)
-                    if (!write(pk)) return@synchronized false
+                    if (!write(pk)) return@withLock false
                     off += k
                 }
                 iconPkg = pkg
@@ -369,7 +388,7 @@ class Ble(private val ctx: Context, private val onMsg: (String) -> Unit) {
                 pk[2] = (off and 255).toByte(); pk[3] = ((off shr 8) and 255).toByte()
                 pk[4] = (blob.size and 255).toByte(); pk[5] = ((blob.size shr 8) and 255).toByte()
                 System.arraycopy(blob, off, pk, 6, k)
-                if (!write(pk)) return@synchronized false
+                if (!write(pk)) return@withLock false
                 off += k
             }
             true
@@ -478,7 +497,7 @@ class Ble(private val ctx: Context, private val onMsg: (String) -> Unit) {
         val c = chr ?: return "ESP32 belum tersambung"
         uploading = true                                   // hentikan kiriman frame peta selama upload
         try {
-            return synchronized(txLock) {
+            return txLock.withLock {
                 var err: String? = null
                 c.writeType = BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT   // pakai konfirmasi: tak ada paket hilang
                 try {
@@ -591,7 +610,7 @@ class Ble(private val ctx: Context, private val onMsg: (String) -> Unit) {
         val c = chr ?: return "ESP32 belum tersambung"
         uploading = true
         try {
-            return synchronized(txLock) {
+            return txLock.withLock {
                 var res: String? = "Tidak ada konfirmasi (butuh firmware v22.29)"
                 c.writeType = BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT
                 try {
@@ -623,7 +642,7 @@ class Ble(private val ctx: Context, private val onMsg: (String) -> Unit) {
         val c = chr ?: return "ESP32 belum tersambung"
         uploading = true
         try {
-            return synchronized(txLock) {
+            return txLock.withLock {
                 var res: String? = "Tidak ada konfirmasi (firmware v22.14?)"
                 c.writeType = BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT
                 try {
@@ -652,7 +671,7 @@ class Ble(private val ctx: Context, private val onMsg: (String) -> Unit) {
     /** Tanya versi firmware + apakah ESP32 punya slot OTA. null = tak ada balasan (firmware lama sebelum v22.31 / terputus). */
     fun fwInfo(): FwInfo? {
         if (!ready || uploading) return null
-        return synchronized(txLock) {
+        return txLock.withLock {
             fwSem.drainPermits()
             fwInfoRes = null
             if (!write(byteArrayOf(-1, 0x2D))) null
@@ -671,7 +690,7 @@ class Ble(private val ctx: Context, private val onMsg: (String) -> Unit) {
         val c = chr ?: return "ESP32 belum tersambung"
         uploading = true                                   // hentikan kiriman frame peta selama update
         try {
-            return synchronized(txLock) {
+            return txLock.withLock {
                 var err: String? = null
                 c.writeType = BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT   // pakai konfirmasi: tak ada paket hilang
                 try {
