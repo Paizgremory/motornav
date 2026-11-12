@@ -412,8 +412,12 @@ object Core {
                 val on = navOn()
                 if (ble.ready) {
                     if (now - lastState > 2000) {
-                        ble.sendControl(byteArrayOf(-1, 2, if (on) 1 else 0))
-                        lastState = now
+                        // v22.42: heartbeat navigasi -- INI yang bikin ESP32 tahu HP masih nyambung (appLinked(), timeout 8 dtk).
+                        // lastState cuma diperbarui kalau sendControl() benar-benar terkirim; kalau gagal/terlewat (mis. lock
+                        // sendang dipakai kirim frame peta), coba lagi secepatnya di putaran berikut (40 ms), bukan nunggu 2 dtk
+                        // lagi -- supaya heartbeat tidak ikut telat berturut-turut sampai ESP32 menyangka HP terputus dan
+                        // navigasi tiba-tiba keluar sendiri (muncul sebentar lalu balik ke standby).
+                        if (ble.sendControl(byteArrayOf(-1, 2, if (on) 1 else 0))) lastState = now
                     }
                     if (now - lastTime > 20000) {
                         val c = Calendar.getInstance()
@@ -449,99 +453,4 @@ object Core {
                 if (now - lastBatt > 30000) { lastBatt = now; Notify.batteryCheck(app) }
                 if (now - lastStatus > 1000) { pushStatus(); lastStatus = now; monitorTick() }
             } catch (e: InterruptedException) {
-                return
-            } catch (e: Exception) {
-                // abaikan, coba lagi di putaran berikut
-            }
-            try { Thread.sleep(40) } catch (e: InterruptedException) { return }
-        }
-    }
-
-    /** Thread kirim: ambil frame terbaru dari antrean lalu kirim lewat BLE (tidak menahan render). */
-    private fun txLoop() {
-        while (running) {
-            try {
-                val f = txQ.poll(500, java.util.concurrent.TimeUnit.MILLISECONDS) ?: continue
-                if (!ble.ready) continue
-                txBusy = true
-                try { ble.sendFrame(f) } finally { txBusy = false }
-            } catch (e: InterruptedException) {
-                return
-            } catch (e: Exception) {
-                // abaikan, coba lagi
-            }
-        }
-    }
-
-    /**
-     * Kualitas peta navigasi (makin kecil frame, makin cepat sampai ke LCD lewat Bluetooth).
-     * 0 Cepat: bergerak maks 4,5 KB / diam 8 KB. 1 Seimbang: 7,5 / 11,5 KB. 2 Tajam: 11,5 KB selalu. (buffer firmware 12 KB)
-     */
-    @Volatile var mapQuality = 0
-    val mapQualityNames = arrayOf("Cepat", "Seimbang", "Tajam")
-    fun cycleMapQuality(): Int {
-        mapQuality = (mapQuality + 1) % 3
-        app.getSharedPreferences("motornav", Context.MODE_PRIVATE).edit().putInt("mapq", mapQuality).apply()
-        dirty = true
-        return mapQuality
-    }
-    private fun frameLimit(moving: Boolean): Int = when (mapQuality) {
-        0 -> if (moving) 4500 else 8000
-        1 -> if (moving) 7500 else 11500
-        else -> 11500
-    }
-
-    /**
-     * JPEG dengan kualitas setinggi mungkin yang masih muat di [limit]. Mulai dari kualitas frame sebelumnya (biasanya 1-2 kali
-     * kompres, dulu ±6 kali lewat pencarian biner), karena peta antar-frame hampir sama.
-     */
-    private fun encode(b: Bitmap, limit: Int): ByteArray? {
-        fun comp(q: Int): ByteArray {
-            val bo = ByteArrayOutputStream(12000)
-            b.compress(Bitmap.CompressFormat.JPEG, q, bo)
-            return bo.toByteArray()
-        }
-        var q = encQ.coerceIn(10, 92)
-        var cur = comp(q)
-        if (cur.size > limit) {
-            while (cur.size > limit && q > 10) { q = maxOf(10, q - 8); cur = comp(q) }
-        } else if (cur.size < limit * 0.8 && q < 92) {
-            val up = comp(minOf(92, q + 8))
-            if (up.size <= limit) { q = minOf(92, q + 8); cur = up }
-        }
-        if (cur.size > limit) return null
-        encQ = q
-        return cur
-    }
-
-    private fun pushPreview(b: Bitmap) {
-        val l = listener ?: return
-        val c = b.copy(Bitmap.Config.ARGB_8888, false)
-        ui.post { l.onPreview(c) }
-    }
-
-    private fun pushStatus() {
-        val l = listener ?: return
-        val sb = StringBuilder()
-        sb.append("ESP32: ").append(ble.msg).append('\n')
-        if (lat.isNaN()) sb.append("GPS: menunggu sinyal...\n")
-        else sb.append(String.format(Locale.US, "GPS: %.5f, %.5f  (±%d m)  %d km/j\n", lat, lon, acc.roundToInt(), (speed * 3.6f).roundToInt()))
-        val d = dest
-        val s = state
-        if (d != null) {
-            sb.append("Tujuan: ").append(d.name).append('\n')
-            if (s != null && s.route != null) sb.append(String.format(Locale.US, "Sisa: %.1f km\n", s.remDist / 1000))
-        } else if (mapOnly) sb.append("Mode: peta saja\n")
-        if (d != null && Engine.note.isNotEmpty()) sb.append(Engine.note).append('\n')
-        if (d != null && routeWarn.isNotEmpty()) sb.append(routeWarn).append('\n')
-        if (Engine.mapNote.isNotEmpty()) sb.append(Engine.mapNote).append('\n')
-        if (routeMsg.isNotEmpty()) sb.append(routeMsg).append('\n')
-        if (ble.framesSent > 0) {
-            sb.append("Frame terkirim: ").append(ble.framesSent)
-            if (ble.lastFrameMs > 0) sb.append(" (terakhir ").append(String.format("%.1f", ble.lastFrameBytes / 1024.0)).append(" KB dalam ").append(ble.lastFrameMs).append(" ms)")
-            sb.append('\n')
-        }
-        val txt = sb.toString().trim()
-        ui.post { l.onStatus(txt) }
-    }
-}
+  
