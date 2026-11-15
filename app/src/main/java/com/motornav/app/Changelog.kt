@@ -7,6 +7,12 @@ package com.motornav.app
 object Changelog {
     /** Terbaru dulu. */
     val FIRMWARE = listOf(
+        "v22.43" to "Standby FOTO/VIDEO kini bisa jalan BERSAMAAN dengan navigasi peta (sebelumnya otomatis fallback ke wajah). Catatan: jam di standby foto/video untuk sementara belum transparan (ada kotak solid di belakang angka), dan visualizer/sampul album/kartu pemutar lagu di mode ini belum tersedia -- akan menyusul di update berikutnya. Tidak ada perubahan protokol Bluetooth, jadi tidak wajib update aplikasi untuk versi ini.",
+        "v22.42" to "Perbaikan bug navigasi peta tidak tampil (layar nyangkut di standby meski aplikasi sudah mengirim peta): urutan alokasi memori saat boot diperbaiki, mesin dekode JPEG peta tidak lagi bergantung ke kanvas tampilan besar.",
+        "v22.41" to "Sampul album di standby foto/video diperkecil dan dipindah ke sebelah progress bar/durasi lagu (sebelumnya besar, menutupi area jam).",
+        "v22.40" to "Pembacaan kartu microSD lebih andal: ESP32 mencoba beberapa kecepatan SPI yang lebih pelan bila kecepatan tercepat gagal (membantu kabel/jumper yang kurang stabil).",
+        "v22.39" to "Perbaikan mode UPLOAD WIFI agar bisa menyala di board dengan RAM terbatas (kanvas tampilan dilepas sementara selama proses upload).",
+        "v22.38" to "Pembebasan memori Bluetooth Classic yang tidak dipakai di ESP32 biasa, supaya Bluetooth Low Energy (BLE) punya lebih banyak RAM untuk fitur peta & lainnya.",
         "v22.37" to "Menu LCD Pengaturan > WALLPAPER / ANIMASI BOOT: TAHAN langsung masuk mode WiFi upload (juga di ESP32-C3); item UPLOAD WIFI kini tampil di semua board.",
         "v22.36" to "Efek getar jalan di wajah standby (gimmick, opsional di pengaturan): wajah ikut bergoyang kecil mengikuti guncangan jalan, dibaca dari akselerometer HP lewat Bluetooth -- pengganti sensor MPU6050 fisik yang sudah dicabut.",
         "v22.35" to "Modul sensor MPU6050 (sudut miring) dan voltase aki 12V dihapus seluruhnya (tidak dipakai lagi); tampilan selalu tegak.",

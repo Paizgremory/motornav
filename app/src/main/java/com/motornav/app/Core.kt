@@ -43,8 +43,6 @@ object Core {
 
     @Volatile var zoom = 17
     @Volatile var headingUp = true
-    val mapQualityNames = listOf("Rendah", "Sedang", "Tinggi")
-    @Volatile var mapQuality = 1   // 0 = rendah (hemat BLE), 1 = sedang (bawaan), 2 = tinggi (lebih tajam, lebih lambat kirim)
     @Volatile var route: Route? = null
     @Volatile var dest: Place? = null
     @Volatile var mapOnly = false
@@ -71,7 +69,6 @@ object Core {
         val pr = app.getSharedPreferences("motornav", Context.MODE_PRIVATE)
         zoom = pr.getInt("zoom", 17).coerceIn(15, 18)
         headingUp = pr.getBoolean("headingUp", true)
-        mapQuality = pr.getInt("mapQuality", 1).coerceIn(0, mapQualityNames.size - 1)
         ble = Ble(app) { pushStatus() }
         tiles = Tiles(app) { dirty = true }
         renderer = Renderer(tiles)
@@ -96,6 +93,7 @@ object Core {
         running = false
         try { lm?.removeUpdates(locListener) } catch (e: Exception) {}
         loopThread?.interrupt()
+        Vib.stop()
         ble.disconnect()
     }
 
@@ -111,14 +109,6 @@ object Core {
         app.getSharedPreferences("motornav", Context.MODE_PRIVATE).edit().putBoolean("headingUp", headingUp).apply()
         computeNav(); dirty = true
         return headingUp
-    }
-
-    /** Ganti tingkat kualitas peta yang dikirim ke ESP32 (rendah/sedang/tinggi). Mempengaruhi target kompresi JPEG. */
-    fun cycleMapQuality(): Int {
-        mapQuality = (mapQuality + 1) % mapQualityNames.size
-        app.getSharedPreferences("motornav", Context.MODE_PRIVATE).edit().putInt("mapQuality", mapQuality).apply()
-        dirty = true
-        return mapQuality
     }
 
     // ---------- tujuan & rute ----------
@@ -417,6 +407,7 @@ object Core {
                     }
                 }
                 if (now - lastMusic > 1000) { lastMusic = now; Music.poll(app, ble) }
+                Vib.poll(app, ble, Cfg.get(app, 12) == 1)   // efek getar jalan (gimmick): menyala/mati sendiri, murah dipanggil tiap tick
                 if (Cfg.dirty && ble.ready && now - lastCfg > 300) {            // pengaturan tampilan: kirim bila berubah / baru tersambung
                     lastCfg = now
                     if (ble.sendControl(Cfg.packet(app))) Cfg.dirty = false
@@ -447,11 +438,11 @@ object Core {
         }
     }
 
-    /** Cari kualitas JPEG tertinggi yang masih muat di batas buffer firmware (12 KB), dibatasi atas oleh mapQuality. */
+    /** Cari kualitas JPEG tertinggi yang masih muat di batas buffer firmware (12 KB). */
     private fun encode(b: Bitmap): ByteArray? {
         val limit = 11500
         var lo = 20
-        var hi = when (mapQuality) { 0 -> 55; 2 -> 92; else -> 75 }
+        var hi = 92
         var best: ByteArray? = null
         while (lo <= hi) {
             val q = (lo + hi) / 2
@@ -479,7 +470,7 @@ object Core {
         val sb = StringBuilder()
         sb.append("ESP32: ").append(ble.msg).append('\n')
         if (lat.isNaN()) sb.append("GPS: menunggu sinyal...\n")
-        else sb.append(String.format(Locale.US, "GPS: %.5f, %.5f  (\u00B1%d m)  %d km/j\n", lat, lon, acc.roundToInt(), (speed * 3.6f).roundToInt()))
+        else sb.append(String.format(Locale.US, "GPS: %.5f, %.5f  (±%d m)  %d km/j\n", lat, lon, acc.roundToInt(), (speed * 3.6f).roundToInt()))
         val d = dest
         val s = state
         if (d != null) {

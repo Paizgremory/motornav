@@ -27,12 +27,9 @@ object Net {
     fun get(url: String, timeoutMs: Int = 10000): String = String(getBytes(url, timeoutMs), Charsets.UTF_8)
 
     /** Ikuti pengalihan (termasuk http<->https) sampai 8 kali; kembalikan URL akhir dan isi halaman (maks 600 KB). */
-    const val UA_MOBILE = "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Mobile Safari/537.36"
-    const val UA_DESKTOP = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36"
-    const val UA_CURL = "curl/8.5.0"
-
-    fun fetchFollow(url: String, ua: String = UA_MOBILE): Pair<String, String> {
+    fun fetchFollow(url: String): Pair<String, String> {
         var u = url
+        val ua = "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Mobile Safari/537.36"
         for (i in 0 until 8) {
             val c = URL(u).openConnection() as HttpURLConnection
             c.instanceFollowRedirects = false
@@ -108,11 +105,7 @@ class Step(
     val name: String,
     val len: Double,
     val endDist: Double,
-    val exit: Int,
-    /** v3.28: gabungan StepFlag (tol, jalan bebas hambatan, feri). */
-    val flags: Int = 0,
-    /** v3.28: petunjuk jalur untuk belokan ini: 0 tak ada data, 1 jalur valid di kiri, 2 di kanan. */
-    val lane: Int = 0
+    val exit: Int
 )
 
 class Route(
@@ -122,12 +115,7 @@ class Route(
     val steps: List<Step>,
     val total: Double,
     val dur: Double
-) {
-    /** v3.28: penyedia rute bilang ada tol walau langkahnya tidak bertanda (mis. travelAdvisory.tollInfo Google). */
-    var tollHint = false
-    val hasToll: Boolean get() = tollHint || steps.any { it.flags and StepFlag.TOLL != 0 }
-    val hasFerry: Boolean get() = steps.any { it.flags and StepFlag.FERRY != 0 }
-}
+)
 
 object Txt {
     fun angle(mod: String): Float = when (mod) {
@@ -161,34 +149,25 @@ object Txt {
 
 object Osrm {
     fun route(fLat: Double, fLon: Double, tLat: Double, tLon: Double): Route =
-        routes(fLat, fLon, tLat, tLon, false).first()
+        routeAlternatives(fLat, fLon, tLat, tLon).first()
 
-    /**
-     * Rute utama + alternatif (v3.28). avoid = minta server membuang tol & feri; bila server menolak parameternya, diulang tanpa itu
-     * (Guard/Picker tetap memeriksa bendera tol di tiap langkah).
-     */
-    fun routes(fLat: Double, fLon: Double, tLat: Double, tLon: Double, avoid: Boolean): List<Route> {
-        val base = "https://router.project-osrm.org/route/v1/driving/" +
+    /** Rute + alternatif (OSRM mengembalikan beberapa rute wajar bila diminta dan tersedia). */
+    fun routeAlternatives(fLat: Double, fLon: Double, tLat: Double, tLon: Double): List<Route> {
+        val url = "https://router.project-osrm.org/route/v1/driving/" +
             "${fmt(fLon)},${fmt(fLat)};${fmt(tLon)},${fmt(tLat)}" +
             "?overview=false&steps=true&geometries=geojson&alternatives=true"
-        var j: JSONObject? = null
-        if (avoid) {
-            try {
-                val t = JSONObject(Net.get("$base&exclude=toll,ferry", 20000))
-                if (t.optString("code") == "Ok") j = t
-            } catch (e: Exception) { /* server tidak mendukung exclude: ulangi tanpa */ }
-        }
-        if (j == null) j = JSONObject(Net.get(base, 20000))
+        val j = JSONObject(Net.get(url, 20000))
         if (j.optString("code") != "Ok") throw RuntimeException("Rute tidak ditemukan (${j.optString("code")})")
-        val ra = j.getJSONArray("routes")
+        val routes = j.getJSONArray("routes")
         val out = ArrayList<Route>()
-        for (i in 0 until ra.length()) {
-            try { out.add(parseRoute(ra.getJSONObject(i))) } catch (e: Exception) { if (i == 0) throw e }
+        for (ri in 0 until routes.length()) {
+            try { out.add(parseRoute(routes.getJSONObject(ri))) } catch (e: Exception) {}
         }
+        if (out.isEmpty()) throw RuntimeException("Rute tidak terbaca")
         return out
     }
 
-    internal fun parseRoute(r: JSONObject): Route {
+    private fun parseRoute(r: JSONObject): Route {
         val sj = r.getJSONArray("legs").getJSONObject(0).getJSONArray("steps")
 
         val la = ArrayList<Double>()
@@ -215,32 +194,10 @@ object Osrm {
         for (i in 0 until sj.length()) {
             val s = sj.getJSONObject(i)
             val m = s.getJSONObject("maneuver")
-            val name = s.optString("name").trim()
-            var fl = 0
-            if (s.optString("mode") == "ferry") fl = fl or StepFlag.FERRY
-            if (Idn.looksToll(name)) fl = fl or StepFlag.TOLL
-            val ints = s.optJSONArray("intersections")
-            if (ints != null) {
-                for (q in 0 until ints.length()) {
-                    val cl = ints.getJSONObject(q).optJSONArray("classes") ?: continue
-                    for (c in 0 until cl.length()) {
-                        when (cl.optString(c)) {
-                            "toll" -> fl = fl or StepFlag.TOLL
-                            "motorway" -> fl = fl or StepFlag.MOTORWAY
-                            "ferry" -> fl = fl or StepFlag.FERRY
-                        }
-                    }
-                }
-            }
-            var lane = 0
-            val lanes = ints?.optJSONObject(0)?.optJSONArray("lanes")
-            if (lanes != null && lanes.length() >= 2) {
-                lane = SmartNav.laneHint(BooleanArray(lanes.length()) { lanes.getJSONObject(it).optBoolean("valid", false) })
-            }
             steps.add(
                 Step(
-                    m.optString("type"), m.optString("modifier"), name,
-                    s.optDouble("distance", 0.0), cum[max(0, endIdx[i])], m.optInt("exit", 0), fl, lane
+                    m.optString("type"), m.optString("modifier"), s.optString("name").trim(),
+                    s.optDouble("distance", 0.0), cum[max(0, endIdx[i])], m.optInt("exit", 0)
                 )
             )
         }
@@ -299,27 +256,20 @@ object Geocode {
     /** Cari URL Google Maps lengkap di dalam isi halaman (mis. dalam skrip pengalihan). */
     private fun mapsUrlsIn(body: String): List<String> {
         val t = body.replace("\\u003d", "=").replace("\\u0026", "&").replace("\\/", "/").replace("&amp;", "&")
-            .replace("\\x3d", "=").replace("\\x26", "&").replace("\\x2F", "/").replace("\\x2f", "/")
-        return Regex("https?://(?:www\\.|maps\\.)?google\\.[a-z.]+/maps[^\"'\\s<>\\\\]+").findAll(t).map { it.value }.distinct().take(5).toList()
+        return Regex("https?://(?:www\\.)?google\\.[a-z.]+/maps/[^\"'\\s<>\\\\]+").findAll(t).map { it.value }.distinct().take(5).toList()
     }
 
     /** Ambil koordinat dari tautan Maps: dari URL akhir dulu, lalu dari isi halamannya. */
     fun fromLink(link: String): Pair<Place?, String> {
-        var lastFin = link
-        // Coba beberapa User-Agent: tautan pendek Google kadang tidak dialihkan untuk satu jenis klien (mis. hanya menampilkan halaman perantara).
-        for (ua in listOf(Net.UA_MOBILE, Net.UA_CURL, Net.UA_DESKTOP)) {
-            var (fin, body) = try { Net.fetchFollow(link, ua) } catch (e: Exception) { continue }
-            findCoord(fin)?.let { return Pair(it, fin) }
-            if (body.isNotEmpty()) findCoord(body)?.let { return Pair(it, fin) }
-            // Halaman perantara (tautan pendek yang tidak dialihkan): ambil URL Maps lengkap dari isinya
-            for (u in mapsUrlsIn(body)) {
-                findCoord(u)?.let { return Pair(it, u) }
-                if (u.contains("/maps/place/")) { fin = u; break }
-            }
-            if (fin != link) return Pair(null, fin)       // sudah dialihkan ke alamat panjang (tanpa koordinat): lanjut cari lewat nama
-            lastFin = fin
+        var (fin, body) = Net.fetchFollow(link)
+        findCoord(fin)?.let { return Pair(it, fin) }
+        if (body.isNotEmpty()) findCoord(body)?.let { return Pair(it, fin) }
+        // Halaman perantara (tautan pendek yang tidak dialihkan): ambil URL Maps lengkap dari isinya
+        for (u in mapsUrlsIn(body)) {
+            findCoord(u)?.let { return Pair(it, u) }
+            if (u.contains("/maps/place/")) { fin = u; break }
         }
-        return Pair(null, lastFin)
+        return Pair(null, fin)
     }
 
     fun search(q: String): List<Place> {
