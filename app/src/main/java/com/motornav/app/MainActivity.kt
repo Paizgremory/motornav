@@ -17,6 +17,7 @@ import android.view.Gravity
 import android.view.View
 import android.widget.*
 import java.util.concurrent.Executors
+import kotlin.math.max
 
 class MainActivity : Activity(), Core.Listener {
     private lateinit var tvStatus: TextView

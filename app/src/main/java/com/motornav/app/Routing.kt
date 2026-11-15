@@ -105,7 +105,9 @@ class Step(
     val name: String,
     val len: Double,
     val endDist: Double,
-    val exit: Int
+    val exit: Int,
+    /** 1 = pakai jalur kiri, 2 = pakai jalur kanan, 0 = tak ada petunjuk jalur (lihat SmartNav.laneHint). */
+    val lane: Int = 0
 )
 
 class Route(
@@ -114,7 +116,10 @@ class Route(
     val cum: DoubleArray,
     val steps: List<Step>,
     val total: Double,
-    val dur: Double
+    val dur: Double,
+    /** Rute melewati jalan tol / dideteksi dari nama jalan tiap langkah (lihat SmartNav.Idn.looksToll/looksFerry). */
+    val hasToll: Boolean = false,
+    val hasFerry: Boolean = false
 )
 
 object Txt {
@@ -191,19 +196,29 @@ object Osrm {
         for (i in 1 until n) cum[i] = cum[i - 1] + Geo.dist(la[i - 1], lo[i - 1], la[i], lo[i])
 
         val steps = ArrayList<Step>()
+        var anyToll = false
+        var anyFerry = false
         for (i in 0 until sj.length()) {
             val s = sj.getJSONObject(i)
             val m = s.getJSONObject("maneuver")
+            val name = s.optString("name").trim()
+            if (Idn.looksToll(name)) anyToll = true
+            if (Idn.looksFerry(name)) anyFerry = true
+            // Jalur (kiri/kanan) utk belokan ini: intersection pertama step = titik manuver, lanes-nya menurut OSRM.
+            val lane = s.optJSONArray("intersections")?.optJSONObject(0)?.optJSONArray("lanes")?.let { lanes ->
+                val valid = BooleanArray(lanes.length()) { lanes.getJSONObject(it).optBoolean("valid", false) }
+                SmartNav.laneHint(valid)
+            } ?: 0
             steps.add(
                 Step(
-                    m.optString("type"), m.optString("modifier"), s.optString("name").trim(),
-                    s.optDouble("distance", 0.0), cum[max(0, endIdx[i])], m.optInt("exit", 0)
+                    m.optString("type"), m.optString("modifier"), name,
+                    s.optDouble("distance", 0.0), cum[max(0, endIdx[i])], m.optInt("exit", 0), lane
                 )
             )
         }
         return Route(
             la.toDoubleArray(), lo.toDoubleArray(), cum, steps,
-            cum[n - 1], r.optDouble("duration", cum[n - 1] / 8.0)
+            cum[n - 1], r.optDouble("duration", cum[n - 1] / 8.0), anyToll, anyFerry
         )
     }
 

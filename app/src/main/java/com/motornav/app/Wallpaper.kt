@@ -8,6 +8,7 @@ import android.media.ExifInterface
 import android.media.MediaMetadataRetriever
 import android.net.Uri
 import java.io.ByteArrayOutputStream
+import java.io.File
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import kotlin.math.floor
@@ -35,6 +36,23 @@ object Wallpaper {
     class Look(val dim: Int, val zoom: Float, val panX: Float, val panY: Float, val sharpen: Boolean = true)
 
     fun isVideo(ctx: Context, uri: Uri): Boolean = (ctx.contentResolver.getType(uri) ?: "").startsWith("video")
+
+    /** CRC32 isi berkas (dibaca per blok, aman untuk berkas besar). Dipakai BootLib utk deteksi duplikat & nomor slot. */
+    fun crcOf(f: File): Long {
+        val crc = java.util.zip.CRC32()
+        f.inputStream().use { ins ->
+            val buf = ByteArray(256 * 1024)
+            while (true) {
+                val n = ins.read(buf)
+                if (n < 0) break
+                crc.update(buf, 0, n)
+            }
+        }
+        return crc.value
+    }
+
+    /** Nomor slot animasi boot di kartu SD ESP32 (/boot/bNNNNN.mnv, NNNNN = 1..65535, lihat MICROSD.md) dari CRC isinya. */
+    fun slotOf(crc: Long): Int = (1 + (crc.toInt().and(0x7FFFFFFF) % 65535))
 
     // ---------- foto ----------
     /** Baca foto sebesar mungkin yang masih wajar (sisi pendek >= 960 px), putar sesuai EXIF. */
